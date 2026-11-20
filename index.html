@@ -119,6 +119,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
 
   <!-- STEP 2 -->
   <section id="s2" class="card hidden">
+    <div id="retrainNote" class="notice hidden" style="margin-bottom:12px">You already have a saved writing style on this device. You only need to do this again if you want to retrain it. <button class="btn small" id="backTo3">Skip, use saved style →</button></div>
     <h2>Teach it your writing style</h2>
     <p class="sub">Write about the random topics below in your normal voice. Don't polish it, just write the way you usually do. Aim for at least <b>300 words in total</b>; around 500 works better. You can also paste something you wrote yourself earlier.</p>
     <div id="samples"></div>
@@ -137,6 +138,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
 
   <!-- STEP 3 -->
   <section id="s3" class="card hidden">
+    <div id="profileBanner" class="notice hidden" style="margin-bottom:12px"></div>
     <h2>Paste the blog / write-up</h2>
     <p class="sub">Paste the text you want to make original. It gets rewritten in your voice, keeping every fact, number and name, and then checked for overlap with the original.</p>
     <textarea id="source" placeholder="Paste the article here…" style="min-height:260px"></textarea>
@@ -206,17 +208,26 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
     <div class="card"><h2>Web search check</h2><div id="webDetails"><p class="sub">Not run.</p></div></div>
   </section>
 </main>
-<footer><b>MyVoice v1.4</b> · updated 20 Nov 2026 · telecom editorial audit (9 categories) added<br>All analysis runs in your browser except the Claude API calls</footer>
+<footer><b>MyVoice v1.5</b> · updated 20 Nov 2026 · writing style saved once per browser<br>All analysis runs in your browser except the Claude API calls</footer>
 
 <script>
 /* ================= utilities ================= */
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+/* IndexedDB backup: some Android browsers clear localStorage; IndexedDB + persistent storage survive longer */
+const idb = {
+  _db:null,
+  open(){ if(this._db) return Promise.resolve(this._db); return new Promise(res=>{ try{ const r=indexedDB.open('myvoice',1); r.onupgradeneeded=()=>r.result.createObjectStore('kv'); r.onsuccess=()=>{ this._db=r.result; res(r.result); }; r.onerror=()=>res(null); }catch(e){ res(null); } }); },
+  async get(k){ const db=await this.open(); if(!db) return null; return new Promise(res=>{ try{ const q=db.transaction('kv').objectStore('kv').get(k); q.onsuccess=()=>res(q.result===undefined?null:q.result); q.onerror=()=>res(null); }catch(e){ res(null); } }); },
+  async set(k,v){ const db=await this.open(); if(!db) return; try{ db.transaction('kv','readwrite').objectStore('kv').put(v,k); }catch(e){} },
+  async del(k){ const db=await this.open(); if(!db) return; try{ db.transaction('kv','readwrite').objectStore('kv').delete(k); }catch(e){} }
+};
+const BACKUP_KEYS = ['profile','samples','key','model','customModel'];
 const store = {
   get(k, d){ try{ const v = localStorage.getItem('myvoice_'+k); return v==null ? d : JSON.parse(v); }catch(e){ return d; } },
-  set(k, v){ try{ localStorage.setItem('myvoice_'+k, JSON.stringify(v)); }catch(e){} },
-  del(k){ try{ localStorage.removeItem('myvoice_'+k); }catch(e){} }
+  set(k, v){ try{ localStorage.setItem('myvoice_'+k, JSON.stringify(v)); }catch(e){} if(BACKUP_KEYS.includes(k)) idb.set(k, v); },
+  del(k){ try{ localStorage.removeItem('myvoice_'+k); }catch(e){} if(BACKUP_KEYS.includes(k)) idb.del(k); }
 };
 function log(msg){ const l=$('#log'); l.textContent += (l.textContent?'\n':'') + '› ' + msg; l.scrollTop = l.scrollHeight; }
 function busy(btn, on, label){ if(on){ btn.dataset.l = btn.innerHTML; btn.innerHTML = '<span class="spinner"></span> '+(label||'Working…'); btn.disabled = true; } else { btn.innerHTML = btn.dataset.l || btn.innerHTML; btn.disabled = false; } }
@@ -1135,9 +1146,44 @@ $('#humanBtn').onclick = async ()=>{
 };
 
 /* ================= init ================= */
-renderSamples();
-if(state.profile) renderProfile();
-go(1);
+function updateBanners(){
+  const p = state.profile;
+  $('#retrainNote').classList.toggle('hidden', !p);
+  if(p){
+    const d = p.created ? new Date(p.created).toLocaleDateString() : '';
+    $('#profileBanner').innerHTML = `✓ Using your saved writing style${d?' (created '+esc(d)+')':''}. It stays saved in this browser, so you won't need to write samples again. <button class="btn small" id="retrainBtn">Retrain my style</button>`;
+    $('#profileBanner').classList.remove('hidden');
+    $('#retrainBtn').onclick = ()=> go(2);
+  } else $('#profileBanner').classList.add('hidden');
+}
+$('#backTo3').onclick = ()=> go(3);
+const _renderProfile = renderProfile;
+renderProfile = function(err){ _renderProfile(err); updateBanners(); };
+(async function init(){
+  // ask the browser to keep this site's data (prevents automatic clearing)
+  try{ if(navigator.storage && navigator.storage.persist) await navigator.storage.persist(); }catch(e){}
+  // restore anything localStorage lost from the IndexedDB backup
+  let restored = false;
+  for(const k of BACKUP_KEYS){
+    if(store.get(k, null) == null){
+      const v = await idb.get(k);
+      if(v != null){ try{ localStorage.setItem('myvoice_'+k, JSON.stringify(v)); restored = true; }catch(e){} }
+    } else { const v = await idb.get(k); if(v == null) idb.set(k, store.get(k, null)); }  // first-time backup of existing data
+  }
+  if(restored){
+    state.profile = store.get('profile', null) || state.profile;
+    const s = store.get('samples', null); if(s) state.samples = s;
+    if(!$('#apiKey').value) $('#apiKey').value = store.get('key','') || '';
+    const m = store.get('model', null); if(m) $('#model').value = m;
+  }
+  renderSamples();
+  if(state.profile) renderProfile();
+  updateBanners();
+  // open where you left off: saved key + saved style → straight to the article step
+  if(state.profile && $('#apiKey').value.trim()) go(3);
+  else if($('#apiKey').value.trim()) go(2);
+  else go(1);
+})();
 </script>
 </body>
 </html>
