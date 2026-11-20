@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4c7ff0"/>
+      <stop offset="1" stop-color="#7a68ee"/>
+    </linearGradient>
+    <linearGradient id="nib" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4c7ff0"/>
+      <stop offset="1" stop-color="#6a5ae6"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- speech bubble = your voice -->
+  <path d="M176 118 H336 A74 74 0 0 1 410 192 V300 A74 74 0 0 1 336 374 H214 L150 420 L164 366 A74 74 0 0 1 102 300 V192 A74 74 0 0 1 176 118 Z" fill="#fff"/>
+  <!-- pen nib = writing -->
+  <path d="M256 344 L194 252 Q186 236 198 222 L226 192 Q256 170 286 192 L314 222 Q326 236 318 252 Z" fill="url(#nib)"/>
+  <line x1="256" y1="340" x2="256" y2="262" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="256" cy="250" r="12" fill="#fff"/>
+  <!-- original-check badge -->
+  <circle cx="392" cy="378" r="58" fill="#3ecf8e" stroke="#fff" stroke-width="12"/>
+  <path d="M364 379 L385 400 L421 360" fill="none" stroke="#fff" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
