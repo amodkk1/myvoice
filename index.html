@@ -70,6 +70,9 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 @keyframes sp{to{transform:rotate(360deg)}}
 .guide li{margin:3px 0}
 .flaglist .item{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px;margin:8px 0;font-size:13.5px}
+details{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin:8px 0}
+summary{cursor:pointer;font-weight:600}
+.ex{border-left:3px solid var(--warn);padding:4px 10px;margin:6px 0;color:#f3dfb6;font-style:italic}
 .flaglist .item .src{color:var(--muted);margin-top:6px;font-size:12.5px}
 .chk{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--text);margin:8px 0}
 .chk input{width:auto}
@@ -152,6 +155,12 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
         <select id="hRounds"><option>0</option><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></div>
       <div><label>Target human score</label>
         <select id="hTarget"><option value="80">80 (relaxed)</option><option value="85" selected>85 (recommended)</option><option value="90">90 (strict)</option></select></div>
+      <div><label>Content type</label>
+        <select id="domain"><option value="telecom" selected>Telecom / technical article</option><option value="general">General writing</option></select></div>
+      <div><label>Editorial audit (9 categories)</label>
+        <select id="audit"><option value="on" selected>On: audit, guide rewrite, re-audit</option><option value="off">Off</option></select></div>
+      <div><label>Audit fix rounds (if any category &lt; 7/10)</label>
+        <select id="aRounds"><option>0</option><option selected>1</option><option>2</option></select></div>
     </div>
     <div class="chk"><input type="checkbox" id="humanize" checked><span>Avoid AI-sounding phrases (delve, tapestry, "in today's fast-paced world"…). The humanize loop then checks the result and keeps fixing it until it hits the target score.</span></div>
     <div class="row" style="margin-top:10px">
@@ -193,10 +202,11 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
       <div class="card"><h2>Plagiarism details</h2><div id="plagDetails"></div></div>
     </div>
     <div class="card"><h2>Style match</h2><div id="styleDetails"></div></div>
+    <div class="card"><h2>Editorial audit</h2><div id="auditDetails"><p class="sub">Not run.</p></div></div>
     <div class="card"><h2>Web search check</h2><div id="webDetails"><p class="sub">Not run.</p></div></div>
   </section>
 </main>
-<footer><b>MyVoice v1.3</b> · updated 20 Nov 2026 · humanize loop added<br>All analysis runs in your browser except the Claude API calls</footer>
+<footer><b>MyVoice v1.4</b> · updated 20 Nov 2026 · telecom editorial audit (9 categories) added<br>All analysis runs in your browser except the Claude API calls</footer>
 
 <script>
 /* ================= utilities ================= */
@@ -321,7 +331,7 @@ const METRIC_DEFS = [
  ['mattr','Vocabulary richness',0.1],
  ['flesch','Readability (Flesch)',15],
  ['contractions','Contractions /100 words',2.5],
- ['firstPerson','I/we words /100',3],
+ ['firstPerson','I/we words /100',3,false],
  ['secondPerson','"You" words /100',2.5],
  ['questionPct','Questions (% sentences)',8],
  ['exclaimPct','Exclamations (% sentences)',6],
@@ -336,7 +346,7 @@ const METRIC_DEFS = [
 function cosine(a,b){ let d=0,na=0,nb=0; for(const k in a){ d+=a[k]*(b[k]||0); na+=a[k]**2; nb+=(b[k]||0)**2; } return (na&&nb)? d/Math.sqrt(na*nb) : 0; }
 function styleSimilarity(p, q){
   const per = METRIC_DEFS.map(([k,,scale])=> Math.max(0, 1 - Math.abs(p[k]-q[k])/(2*scale)));
-  const mScore = mean(per);
+  const mScore = mean(per.filter((x,i)=>METRIC_DEFS[i][3]!==false));
   const cos = cosine(p.fw, q.fw);
   const fScore = Math.max(0, Math.min(1, (cos-0.6)/0.38));
   return { score: Math.round(100*(0.7*mScore + 0.3*fScore)), per, cos };
@@ -432,7 +442,7 @@ function renderHighlighted(rewrite, res){
 
 /* ================= Claude API ================= */
 function getModel(){ const m=$('#model').value; return m==='custom' ? ($('#customModel').value.trim()||'claude-sonnet-5-5') : m; }
-async function claude({system, messages, max_tokens=4096, tools, temperature}){
+async function claude({system, messages, max_tokens=4096, tools, tool_choice, temperature}){
   const key = $('#apiKey').value.trim();
   if(!key) throw new Error('Add your Anthropic API key in step 1.');
   let msgs = messages.slice();
@@ -440,6 +450,7 @@ async function claude({system, messages, max_tokens=4096, tools, temperature}){
   for(let turn=0; turn<4; turn++){
     const body = {model:getModel(), max_tokens, system, messages:msgs};
     if(tools) body.tools = tools;
+    if(tool_choice) body.tool_choice = tool_choice;
     if(temperature!=null) body.temperature = temperature;
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method:'POST',
@@ -454,7 +465,8 @@ async function claude({system, messages, max_tokens=4096, tools, temperature}){
     const data = await res.json();
     allContent = allContent.concat(data.content||[]);
     if(data.stop_reason === 'pause_turn'){ msgs = msgs.concat([{role:'assistant', content:data.content}]); continue; }
-    return {data, content:allContent, text: allContent.filter(b=>b.type==='text').map(b=>b.text).join('')};
+    const tu = allContent.find(b=>b.type==='tool_use');
+    return {data, content:allContent, text: allContent.filter(b=>b.type==='text').map(b=>b.text).join(''), toolInput: tu ? tu.input : null, stop: data.stop_reason};
   }
   return {content:allContent, text: allContent.filter(b=>b.type==='text').map(b=>b.text).join('')};
 }
@@ -621,7 +633,7 @@ function styleBrief(){
 ${g.summary?'Voice: '+g.summary+'\n':''}${g.tone?'Tone: '+g.tone+' ('+(g.formality||'')+')\n':''}${g.sentence_patterns?'Sentence patterns:\n- '+g.sentence_patterns.join('\n- ')+'\n':''}${g.vocabulary?'Vocabulary: '+g.vocabulary+'\n':''}${g.signature_phrases&&g.signature_phrases.length?'Signature phrases (use naturally, not in every paragraph): '+g.signature_phrases.join('; ')+'\n':''}${g.transitions&&g.transitions.length?'Transitions they use: '+g.transitions.join('; ')+'\n':''}${g.punctuation_habits?'Punctuation: '+g.punctuation_habits.join('; ')+'\n':''}${g.quirks?'Quirks to keep: '+g.quirks.join('; ')+'\n':''}${g.paragraphing?'Paragraphing: '+g.paragraphing+'\n':''}${g.avoid?'Never: '+g.avoid.join('; ')+'\n':''}
 Measured targets (match these closely):
 - average sentence length ≈ ${m.avgSentLen.toFixed(0)} words, with variation SD ≈ ${m.sentLenSD.toFixed(0)} (${m.shortPct.toFixed(0)}% of sentences under 8 words, ${m.longPct.toFixed(0)}% over 25)
-- contractions ≈ ${m.contractions.toFixed(1)} per 100 words; first person ≈ ${m.firstPerson.toFixed(1)} per 100; "you" ≈ ${m.secondPerson.toFixed(1)} per 100
+- contractions ≈ ${m.contractions.toFixed(1)} per 100 words; first person ≤ ${Math.min(m.firstPerson,1.5).toFixed(1)} per 100 (keep it sparing); "you" ≈ ${m.secondPerson.toFixed(1)} per 100
 - commas per sentence ≈ ${m.commasPerSent.toFixed(1)}; dashes ≈ ${m.dashes.toFixed(1)}/100 words; semicolons ≈ ${m.semicolons.toFixed(1)}/100; parentheses ≈ ${m.parens.toFixed(1)}/100
 - questions ≈ ${m.questionPct.toFixed(0)}% of sentences; readability (Flesch) ≈ ${m.flesch.toFixed(0)}
 - common sentence openers: ${m.topOpeners.join(', ')}
@@ -638,7 +650,17 @@ function rewriteRules(){
 3. ${strong?'Restructure thoroughly: reorder points inside paragraphs where logic allows, merge or split sentences, change sentence openings and grammatical structure, swap examples\' framing. It must read as a new piece written from scratch by the author.':'Keep the paragraph order, but rebuild every sentence from scratch with different structure and wording.'}
 4. Direct quotations attributed to someone stay word-for-word inside quotation marks with their attribution.
 5. Write exactly the way the author writes (see profile): their sentence rhythm, vocabulary level, contractions, quirks, spelling conventions and punctuation habits. Their style beats "polished" writing.
-${$('#humanize').checked?'6. Avoid AI-sounding writing: no "delve", "tapestry", "testament to", "in today\'s fast-paced world", "ever-evolving", "it\'s important to note", "game-changer", "seamless", "unlock", "elevate", "embark", "realm", "landscape", "moreover/furthermore" chains, no "not only… but also", no tidy triplets everywhere, and no motivational wrap-up lines.\n':''}Keep headings if the original has them (rewrite their wording too, keep "#" markdown markers). Output ONLY the rewritten text: no preface, no notes, paragraphs separated by a blank line.`;
+${$('#humanize').checked?'6. Avoid AI-sounding writing: no "delve", "tapestry", "testament to", "in today\'s fast-paced world", "ever-evolving", "it\'s important to note", "game-changer", "seamless", "unlock", "elevate", "embark", "realm", "landscape", "moreover/furthermore" chains, no "not only… but also", no tidy triplets everywhere, and no motivational wrap-up lines.\n':''}${editorialRules()}Keep headings if the original has them (rewrite their wording too, keep "#" markdown markers). Output ONLY the rewritten text: no preface, no notes, paragraphs separated by a blank line.`;
+}
+function editorialRules(){
+  const tel = $('#domain').value==='telecom';
+  return `Editorial rules (always apply):
+- Do NOT invent firsthand experience, anecdotes, clients, project results or achievements. No "in my experience", "when I led", "I've seen" unless the source itself says it.
+- Use first person sparingly (at most about once per paragraph); prefer direct, confident statements.
+- No mechanical transitions (Firstly/Secondly/Finally, Moreover, Furthermore, Additionally), no clichés, no formulaic or motivational conclusion. End on a concrete point.
+- Do not add new statistics, sources, numbers or claims. Keep claims that need verification attributed or hedged exactly as strongly as the source does, never stronger.
+- Preserve technical depth, real-world scenarios and every substantiated fact.
+${tel?'- Write like a senior telecom solutions architect: precise terminology (e.g. 3GPP, O-RAN, TM Forum, OSS/BSS, RAN, core, transport) used correctly; explain mechanisms, trade-offs, operational impact and commercial implications only where the source supports them.\n':''}`;
 }
 function chunkText(text, maxWords=850){
   const paras = text.split(/\n\s*\n/).map(p=>p.trim()).filter(Boolean);
@@ -647,7 +669,7 @@ function chunkText(text, maxWords=850){
   if(cur.length) chunks.push(cur.join('\n\n'));
   return chunks;
 }
-async function rewriteText(source){
+async function rewriteText(source, guidance=''){
   // Two-stage "notes, then write" method: the writer never sees the original wording,
   // so it can't echo it. This is what removes plagiarism reliably.
   const chunks = chunkText(source);
@@ -665,7 +687,7 @@ async function rewriteText(source){
     const r = await claude({
       max_tokens: 6000,
       system: `You are a ghostwriter. You write original pieces from research notes, sounding exactly like one specific author.\n\n${styleBrief()}\n\n${rewriteRules().replace(/from the original/g,'from any source')}`,
-      messages:[{role:'user', content:`${chunks.length>1?`This is part ${i+1} of ${chunks.length} of a longer piece.${prev?` The previous part ended with:\n<previous>${prev}</previous>\nContinue naturally from it (don't repeat it).`:''}\n\n`:''}<notes>\n${notes}\n</notes>\n\nWrite this as flowing prose in the author's voice. Cover every note, keep all facts, numbers, names and technical terms, keep QUOTE lines as quotations with attribution, turn HEADING lines into "## " headings in the author's wording. Build your own sentences; don't just expand each bullet into one sentence. Output only the text.`}]
+      messages:[{role:'user', content:`${chunks.length>1?`This is part ${i+1} of ${chunks.length} of a longer piece.${prev?` The previous part ended with:\n<previous>${prev}</previous>\nContinue naturally from it (don't repeat it).`:''}\n\n`:''}<notes>\n${notes}\n</notes>\n\nWrite this as flowing prose in the author's voice. Cover every note, keep all facts, numbers, names and technical terms, keep QUOTE lines as quotations with attribution, turn HEADING lines into "## " headings in the author's wording. Build your own sentences; don't just expand each bullet into one sentence.${guidance?`\n\n<editorial_guidance from an audit of the source; apply it>\n${guidance}\n</editorial_guidance>`:''} Output only the text.`}]
     });
     out.push(r.text.trim().replace(/^```\w*\n?|```$/g,''));
   }
@@ -730,7 +752,7 @@ Return ONLY JSON: {"results":[{"n":1,"status":"match|similar|clear","url":"best 
 /* ================= humanization check + loop ================= */
 const AI_PATTERNS = [
  {label:'AI buzzwords', w:4, re:/\b(delv(?:e|es|ing)|tapestry|testament to|ever[- ]evolving|ever[- ]changing|fast[- ]paced world|navigat(?:e|ing) the (?:complexities|landscape)|unlock(?:s|ing)? (?:the )?(?:full )?potential|game[- ]changers?|seamless(?:ly)?|leverag(?:e|es|ing)|robust|realm|embark(?:s|ing)?|elevat(?:e|es|ing)|harness(?:es|ing)? the power|myriad|plethora|pivotal|paramount|cutting[- ]edge|revolutioni[sz](?:e|es|ing)|transformative|synerg(?:y|ies|istic)|holistic(?:ally)?|foster(?:s|ing)?|underscor(?:e|es|ed|ing)|showcas(?:e|es|ing)|intricate|bustling|vibrant|meticulous(?:ly)?|crucial|vital role|key takeaways?|landscape|in the digital age|stands as a|serves as a)\b/gi},
- {label:'Stiff transitions', w:3, re:/(?:^|[.!?]\s+)(?:Moreover|Furthermore|Additionally|In conclusion|In summary|Ultimately|Overall|Notably|Importantly|Consequently|Thus|Hence)\b/gm},
+ {label:'Stiff transitions', w:3, re:/(?:^|[.!?]\s+)(?:Moreover|Furthermore|Additionally|In conclusion|In summary|To sum up|In essence|Ultimately|Overall|Notably|Importantly|Consequently|Thus|Hence|Firstly|Secondly|Thirdly|Lastly)\b/gm},
  {label:'Filler hedges', w:4, re:/\b(?:it'?s|it is) (?:important|worth|crucial|essential) (?:to note|noting|to remember|to understand|to recognize)\b/gi},
  {label:'"Not just X, but Y" pattern', w:5, re:/\bnot (?:just|only|merely) [^.!?\n]{1,80}?\b(?:but|it'?s|it is)\b/gi},
  {label:'Cliché set-ups', w:4, re:/\b(?:here'?s the thing|let'?s (?:dive|break (?:it|this) down|explore|unpack)|the bottom line|at the end of the day|in today'?s (?:world|landscape|era)|when it comes to|imagine a world|picture this|buckle up)\b/gi},
@@ -790,6 +812,14 @@ function humanCheck(text){
   if(pcv!==null && pcv < 0.25){
     penalty+=6; issues.push({label:'Paragraphs all the same length', detail:`variation ${pcv.toFixed(2)}`, fix:'Vary paragraph length: allow a one- or two-sentence paragraph and a longer one where it fits.', pen:6});
   }
+  // 6b. excessive first person / invented-experience phrasing
+  if(m.firstPerson > 2.5){
+    penalty+=8; issues.push({label:'Too much first person', detail:`${m.firstPerson.toFixed(1)} I/we words per 100`, fix:'Cut first-person phrasing to roughly one per paragraph; state points directly. Never invent personal experience.', pen:8});
+  }
+  const inv = (t.match(/\b(?:in my (?:experience|years)|when I (?:led|ran|worked|managed|built)|I'?ve (?:seen|worked|led|built|helped)|my team and I|on (?:a|one) recent project)\b/gi)||[]).filter(x=>!normQuotes(state.source||'').toLowerCase().includes(x.toLowerCase()));
+  if(inv.length){
+    penalty+=10; issues.push({label:'Possible invented experience', detail:[...new Set(inv.map(x=>x.toLowerCase()))].join(', '), fix:'Remove claims of firsthand experience or project work that are not in the source; rephrase as general statements.', pen:10});
+  }
   // 7. formality
   if(mine.contractions>=1.5 && m.contractions < mine.contractions*0.5){
     penalty+=8; issues.push({label:'Too formal for you', detail:`contractions ${m.contractions.toFixed(1)}/100 vs yours ${mine.contractions.toFixed(1)}`, fix:`Use contractions (it's, don't, we're) about as often as the author: ≈ ${mine.contractions.toFixed(1)} per 100 words.`, pen:8});
@@ -842,6 +872,76 @@ async function humanizeLoop(text, source, rounds, target, startRound=1){
   return {text: best.text, history};
 }
 
+/* ================= editorial audit (telecom editor) ================= */
+const AUDIT_CATS = ["Writing voice and authenticity","Sentence structure and natural rhythm","Technical credibility and engineering depth","Originality and thought leadership","Logical flow and paragraph construction","Evidence, sources and factual accuracy","Commercial relevance and financial reasoning","Language and formulaic AI-writing patterns","Publication readiness"];
+const AUDIT_TOOL = {
+  name:'report_audit', description:'Report the full editorial audit.',
+  input_schema:{type:'object', properties:{
+    categories:{type:'array', description:'Exactly the 9 categories, in order', items:{type:'object', properties:{
+      name:{type:'string'}, score:{type:'integer', description:'1-10'},
+      rubric:{type:'string', description:'Why this score, referencing the rubric'},
+      findings:{type:'array', items:{type:'object', properties:{
+        excerpt:{type:'string', description:'Exact problematic excerpt, max 30 words'},
+        problem:{type:'string', description:'Why it needs improvement'},
+        revision:{type:'string', description:'Concrete revision with no unsupported claims'}}, required:['excerpt','problem','revision']}}},
+      required:['name','score','rubric','findings']}},
+    top_changes:{type:'array', items:{type:'string'}, description:'The 10 highest-priority changes, as instructions. Do not quote the article wording.'},
+    facts_to_verify:{type:'array', items:{type:'object', properties:{claim:{type:'string'}, reason:{type:'string'}, source_type:{type:'string', description:'Kind of source that would verify it'}}, required:['claim','reason']}},
+    summary:{type:'string'},
+    improvements:{type:'array', items:{type:'string'}, description:'Only when a previous audit is supplied: how the revision improves authenticity and technical value'}
+  }, required:['categories','top_changes','facts_to_verify','summary']}
+};
+const RUBRIC = `Scoring rubric (use for every category):
+9-10 = publication-ready; distinctive, precise, nothing to fix.
+7-8 = solid; minor edits only.
+5-6 = noticeable weaknesses a senior editor would send back.
+3-4 = major problems; substantial revision needed.
+1-2 = fundamentally flawed for this category.`;
+function auditPersona(){
+  return $('#domain').value==='telecom'
+    ? 'You are a senior telecommunications technical editor and experienced solutions architect (RAN, core, transport, OSS/BSS, autonomous networks, 3GPP/O-RAN/TM Forum). You are rigorous, specific and fair.'
+    : 'You are a senior technical editor. You are rigorous, specific and fair.';
+}
+async function runAudit(text, before){
+  const r = await claude({
+    max_tokens: 8000,
+    tools:[AUDIT_TOOL], tool_choice:{type:'tool', name:'report_audit'},
+    system: auditPersona() + ' Never claim that an AI detector can reliably verify human authorship; judge writing on its merits.',
+    messages:[{role:'user', content:`Review the article below for technical credibility, authentic writing voice, repetitive AI-style patterns, original thought leadership and commercial relevance.
+
+Audit categories:
+${AUDIT_CATS.map((c,i)=>`${i+1}. ${c}`).join('\n')}
+
+${RUBRIC}
+
+For each category: give the score, explain it against the rubric, quote 1–4 specific problematic excerpts exactly as written, explain why each needs improvement, and propose a concrete revision that introduces no unsupported claims. If a category is genuinely strong, say so and give fewer findings.
+Then give the 10 highest-priority changes (as instructions, without quoting the article), and flag every fact, statistic, figure or attributed claim that needs source verification.
+${before?`\nThis is a REVISED version. The previous version's scores were: ${before.categories.map(c=>`${c.name}: ${c.score}`).join('; ')}. Also fill "improvements": explain concretely how this revision improves authenticity and technical value compared with the previous version (and note anything that got worse).\n`:''}
+<article>
+${text}
+</article>`}]
+  });
+  if(!r.toolInput) throw new Error('Audit returned no result');
+  const a = r.toolInput;
+  a.categories = (a.categories||[]).slice(0,9);
+  a.avg = a.categories.length ? mean(a.categories.map(c=>+c.score||0)) : 0;
+  return a;
+}
+function auditGuidance(a){
+  if(!a) return '';
+  const weak = a.categories.filter(c=>c.score<8).map(c=>`- ${c.name} (${c.score}/10): ${c.rubric}`).join('\n');
+  return `Top priority changes:\n${(a.top_changes||[]).map((x,i)=>`${i+1}. ${x}`).join('\n')}\n\nWeak areas to fix:\n${weak||'- none'}\n\nClaims that need source verification (keep them, but never state them more strongly than the source; don't add numbers):\n${(a.facts_to_verify||[]).map(f=>'- '+f.claim).join('\n')||'- none'}`;
+}
+async function auditRevise(text, a){
+  const findings = a.categories.filter(c=>c.score<8).flatMap(c=>(c.findings||[]).map(f=>`[${c.name}] "${f.excerpt}" → ${f.problem} Suggested: ${f.revision}`)).join('\n');
+  const r = await claude({
+    max_tokens: 8000,
+    system: `${auditPersona()} You revise articles so they read as the work of one specific author.\n\n${styleBrief()}\n\n${editorialRules()}`,
+    messages:[{role:'user', content:`<article>\n${text}\n</article>\n\nAn editorial audit found these issues:\n${auditGuidance(a)}\n\nSpecific findings:\n${findings||'- none'}\n\nRevise the article to fix them. Keep every substantiated fact, number, name, technical term, quotation and heading. Keep length within ±15%. Don't add claims, statistics or firsthand experience. Write in the author's voice. Output ONLY the revised article.`}]
+  });
+  return r.text.trim().replace(/^```\w*\n?|```$/g,'');
+}
+
 $('#rewriteBtn').onclick = async ()=>{
   const source = $('#source').value.trim();
   if(!state.profile){ alert('Create your style profile first (step 2).'); go(2); return; }
@@ -850,7 +950,15 @@ $('#rewriteBtn').onclick = async ()=>{
   $('#progressWrap').classList.remove('hidden'); $('#log').textContent='';
   state.source = source; state.web=null;
   try{
-    let text = await rewriteText(source);
+    state.audit = null;
+    const doAudit = $('#audit').value==='on';
+    let auditBefore = null;
+    if(doAudit){
+      log('Editorial audit of the original (9 categories)…');
+      try{ auditBefore = await runAudit(source); log(`Original averages ${auditBefore.avg.toFixed(1)}/10`); }
+      catch(e){ log('Audit failed: '+e.message+' (continuing without it)'); }
+    }
+    let text = await rewriteText(source, auditGuidance(auditBefore));
     log('Checking against the original (5-word overlap + sentence similarity)…');
     let res = localPlagiarism(text, source);
     log(`Originality ${res.originality}% · ${res.coveredPct.toFixed(1)}% copied words · ${res.flagged.length} close sentences`);
@@ -869,6 +977,28 @@ $('#rewriteBtn').onclick = async ()=>{
       text = hl.text; state.hHistory = hl.history;
       res = localPlagiarism(text, source);
     }
+    if(doAudit && auditBefore){
+      let auditAfter = null;
+      try{
+        log('Re-auditing your version…');
+        auditAfter = await runAudit(text, auditBefore);
+        log(`Your version averages ${auditAfter.avg.toFixed(1)}/10`);
+        const aRounds = +$('#aRounds').value;
+        for(let r=1; r<=aRounds && auditAfter.categories.some(c=>c.score<7); r++){
+          log(`Audit fix round ${r}: revising weak categories…`);
+          let t = await auditRevise(text, auditAfter);
+          let p = localPlagiarism(t, source);
+          if(p.coveredPct>=1 || p.flagged.length){ t = await fixFlagged(t, p, source); p = localPlagiarism(t, source); }
+          const hc = humanCheck(t);
+          if(hc.score < +$('#hTarget').value){ log('Smoothing AI patterns after revision…'); const hl = await humanizeLoop(t, source, 1, +$('#hTarget').value, (state.hHistory.length? Math.max(...state.hHistory.map(x=>x.round))+1 : 1)); t = hl.text; state.hHistory = state.hHistory.concat(hl.history.filter(x=>x.round>0)); }
+          const a2 = await runAudit(t, auditBefore);
+          log(`→ ${a2.avg.toFixed(1)}/10${a2.avg>=auditAfter.avg?'':' (lower, kept previous version)'}`);
+          if(a2.avg >= auditAfter.avg){ text = t; auditAfter = a2; }
+        }
+      }catch(e){ log('Audit step failed: '+e.message); }
+      state.audit = {before: auditBefore, after: auditAfter};
+      res = localPlagiarism(text, source);
+    } else if(doAudit) state.audit = {error:'The audit of the original failed, so it was skipped.'};
     state.rewrite = text; state.result = res;
     if($('#webCheck').value==='on'){
       try{ state.web = await webCheck(text); log('Web search done.'); }
@@ -899,12 +1029,48 @@ function renderResults(){
   $('#scores').innerHTML = `
     <div class="score"><div class="n ${cls(res.originality,90,75)}">${res.originality}%</div><div class="l">Originality vs source</div></div>
     <div class="score"><div class="n ${cls(hc.score,target,70)}">${hc.score}</div><div class="l">Human score (target ${target})</div></div>
+    ${state.audit&&state.audit.after?`<div class="score"><div class="n ${cls(state.audit.after.avg,8,6)}">${state.audit.after.avg.toFixed(1)}</div><div class="l">Editorial audit /10 (original ${state.audit.before.avg.toFixed(1)})</div></div>`:''}
     <div class="score"><div class="n ${cls(simOut.score,80,65)}">${simOut.score}%</div><div class="l">Style match to you (source was ${simSrc.score}%)</div></div>
     <div class="score"><div class="n ${web&&web.results? (webMatches?'bad':(webSimilar?'warn':'good')) : ''}">${web&&web.results? (webMatches? webMatches+' match':'Clear') : (web&&web.error?'Error':'Off')}</div><div class="l">Web search check</div></div>`;
   // text views
   if(view==='hl') $('#outView').innerHTML = renderHighlighted(text,res);
   else if(view==='clean') $('#outView').textContent = text;
   else $('#outView').textContent = state.source;
+  // editorial audit
+  const au = state.audit;
+  if(!au) $('#auditDetails').innerHTML = '<p class="sub">Audit was off for this run.</p>';
+  else if(au.error) $('#auditDetails').innerHTML = `<div class="notice warnbox">${esc(au.error)}</div>`;
+  else {
+    const B=au.before, A=au.after;
+    const sc = v => v==null?'—':`<span class="${cls(v,8,6)}">${v}</span>`;
+    const catBlock = (c) => `<details><summary>${esc(c.name)} · ${c.score}/10</summary><p class="sub" style="margin:6px 0">${esc(c.rubric)}</p>${(c.findings||[]).map(f=>`<div class="ex">“${esc(f.excerpt)}”</div><p style="margin:2px 0 4px"><b>Why:</b> ${esc(f.problem)}</p><p style="margin:0 0 10px"><b>Revision:</b> ${esc(f.revision)}</p>`).join('')||'<p class="good">No issues.</p>'}</details>`;
+    $('#auditDetails').innerHTML = `
+      <div class="notice">No AI detector can reliably prove who wrote a text. These scores are an editorial judgement, and the Human score is a style check, not proof of human authorship.</div>
+      <table style="margin-top:10px"><tr><th>Category</th><th class="num">Original</th><th class="num">Your version</th></tr>
+      ${AUDIT_CATS.map((n,i)=>`<tr><td>${i+1}. ${esc(n)}</td><td class="num">${sc(B.categories[i]&&B.categories[i].score)}</td><td class="num">${sc(A&&A.categories[i]&&A.categories[i].score)}</td></tr>`).join('')}
+      <tr><td><b>Average</b></td><td class="num"><b>${B.avg.toFixed(1)}</b></td><td class="num"><b>${A?A.avg.toFixed(1):'—'}</b></td></tr></table>
+      ${A&&A.improvements&&A.improvements.length?`<h3>How the revision improves authenticity and technical value</h3><ul class="guide">${A.improvements.map(x=>'<li>'+esc(x)+'</li>').join('')}</ul>`:''}
+      ${A?`<h3>Facts and statistics to verify before publishing</h3>${(A.facts_to_verify||[]).length?`<ul class="guide">${A.facts_to_verify.map(f=>`<li><b>${esc(f.claim)}</b>: ${esc(f.reason)}${f.source_type?` <span class="pill">${esc(f.source_type)}</span>`:''}</li>`).join('')}</ul>`:'<p class="sub">None flagged.</p>'}`:''}
+      ${A&&A.categories.some(c=>c.score<9)?`<h3>Remaining top changes for your version</h3><ol class="guide">${(A.top_changes||[]).map(x=>'<li>'+esc(x)+'</li>').join('')}</ol>`:''}
+      <h3>Your version: category details</h3>${A?A.categories.map(catBlock).join(''):'<p class="sub">Re-audit failed.</p>'}
+      <h3>Original article audit</h3>
+      <details><summary>Top 10 changes the original needed</summary><ol class="guide">${(B.top_changes||[]).map(x=>'<li>'+esc(x)+'</li>').join('')}</ol></details>
+      <details><summary>Facts flagged in the original (${(B.facts_to_verify||[]).length})</summary><ul class="guide">${(B.facts_to_verify||[]).map(f=>`<li><b>${esc(f.claim)}</b>: ${esc(f.reason)}</li>`).join('')}</ul></details>
+      ${B.categories.map(catBlock).join('')}
+      <button class="btn small" id="reAudit" style="margin-top:8px">Audit &amp; fix again</button>`;
+    const ra=$('#reAudit'); if(ra) ra.onclick = async ()=>{
+      busy(ra,true,'Auditing…'); $('#log').textContent='';
+      try{
+        let cur = au.after || await runAudit(state.rewrite, au.before);
+        let t = await auditRevise(state.rewrite, cur);
+        let p = localPlagiarism(t, state.source);
+        if(p.coveredPct>=1 || p.flagged.length){ t = await fixFlagged(t, p, state.source); }
+        const a2 = await runAudit(t, au.before);
+        if(a2.avg >= cur.avg){ state.rewrite = t; au.after = a2; } else { au.after = cur; alert('The new revision scored lower, so your current version was kept.'); }
+        state.result = localPlagiarism(state.rewrite, state.source); renderResults();
+      }catch(e){ alert('Audit failed: '+e.message); busy(ra,false); }
+    };
+  }
   // humanization details
   const hist = state.hHistory||[];
   $('#humanDetails').innerHTML = `
