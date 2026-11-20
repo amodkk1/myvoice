@@ -47,6 +47,8 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
 .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;border:1px solid var(--line);margin:2px 4px 2px 0;color:var(--muted)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+@media(max-width:760px){.grid4{grid-template-columns:1fr 1fr}}
 @media(max-width:760px){.grid2,.grid3{grid-template-columns:1fr}}
 .score{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px;text-align:center}
 .score .n{font-size:32px;font-weight:700}
@@ -146,8 +148,12 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
         <select id="rounds"><option>0</option><option>1</option><option selected>2</option><option>3</option></select></div>
       <div><label>Web plagiarism search</label>
         <select id="webCheck"><option value="on" selected>On (uses Claude web search)</option><option value="off">Off (local check only)</option></select></div>
+      <div><label>Humanize loop rounds</label>
+        <select id="hRounds"><option>0</option><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></div>
+      <div><label>Target human score</label>
+        <select id="hTarget"><option value="80">80 (relaxed)</option><option value="85" selected>85 (recommended)</option><option value="90">90 (strict)</option></select></div>
     </div>
-    <div class="chk"><input type="checkbox" id="humanize" checked><span>Avoid AI-sounding phrases (delve, tapestry, "in today's fast-paced world"…)</span></div>
+    <div class="chk"><input type="checkbox" id="humanize" checked><span>Avoid AI-sounding phrases (delve, tapestry, "in today's fast-paced world"…). The humanize loop then checks the result and keeps fixing it until it hits the target score.</span></div>
     <div class="row" style="margin-top:10px">
       <button class="btn primary" id="rewriteBtn">Rewrite in my style &amp; check →</button>
     </div>
@@ -161,7 +167,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
     <div class="card">
       <h2>Result</h2>
       <p class="sub" id="verdict"></p>
-      <div class="grid3" id="scores"></div>
+      <div class="grid4" id="scores"></div>
     </div>
     <div class="card">
       <div class="row" style="justify-content:space-between">
@@ -170,6 +176,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
         <button class="btn small" id="dlOut">Download .txt</button>
         <button class="btn small" id="editOut">Edit</button>
         <button class="btn small" id="recheck">Re-check</button>
+        <button class="btn small" id="humanBtn">Humanize again</button>
         <button class="btn small primary" id="fixBtn">Fix flagged parts</button>
       </div>
       <div class="tabs" style="margin-top:10px">
@@ -182,13 +189,14 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
       <p class="sub" style="margin-top:8px"><mark style="background:rgba(240,98,114,.28);color:inherit">red</mark> = 5+ words in a row matching the original · <span style="border-bottom:2px dotted var(--warn)">dotted</span> = sentence too close to an original sentence · <span style="background:rgba(91,192,235,.18)">blue</span> = direct quotation (allowed, not counted)</p>
     </div>
     <div class="grid2">
+      <div class="card"><h2>Humanization check</h2><div id="humanDetails"></div></div>
       <div class="card"><h2>Plagiarism details</h2><div id="plagDetails"></div></div>
-      <div class="card"><h2>Style match</h2><div id="styleDetails"></div></div>
     </div>
+    <div class="card"><h2>Style match</h2><div id="styleDetails"></div></div>
     <div class="card"><h2>Web search check</h2><div id="webDetails"><p class="sub">Not run.</p></div></div>
   </section>
 </main>
-<footer>MyVoice · single-file app · all analysis runs in your browser except the Claude API calls</footer>
+<footer><b>MyVoice v1.3</b> · updated 20 Nov 2026 · humanize loop added<br>All analysis runs in your browser except the Claude API calls</footer>
 
 <script>
 /* ================= utilities ================= */
@@ -718,6 +726,122 @@ Return ONLY JSON: {"results":[{"n":1,"status":"match|similar|clear","url":"best 
   return j;
 }
 
+
+/* ================= humanization check + loop ================= */
+const AI_PATTERNS = [
+ {label:'AI buzzwords', w:4, re:/\b(delv(?:e|es|ing)|tapestry|testament to|ever[- ]evolving|ever[- ]changing|fast[- ]paced world|navigat(?:e|ing) the (?:complexities|landscape)|unlock(?:s|ing)? (?:the )?(?:full )?potential|game[- ]changers?|seamless(?:ly)?|leverag(?:e|es|ing)|robust|realm|embark(?:s|ing)?|elevat(?:e|es|ing)|harness(?:es|ing)? the power|myriad|plethora|pivotal|paramount|cutting[- ]edge|revolutioni[sz](?:e|es|ing)|transformative|synerg(?:y|ies|istic)|holistic(?:ally)?|foster(?:s|ing)?|underscor(?:e|es|ed|ing)|showcas(?:e|es|ing)|intricate|bustling|vibrant|meticulous(?:ly)?|crucial|vital role|key takeaways?|landscape|in the digital age|stands as a|serves as a)\b/gi},
+ {label:'Stiff transitions', w:3, re:/(?:^|[.!?]\s+)(?:Moreover|Furthermore|Additionally|In conclusion|In summary|Ultimately|Overall|Notably|Importantly|Consequently|Thus|Hence)\b/gm},
+ {label:'Filler hedges', w:4, re:/\b(?:it'?s|it is) (?:important|worth|crucial|essential) (?:to note|noting|to remember|to understand|to recognize)\b/gi},
+ {label:'"Not just X, but Y" pattern', w:5, re:/\bnot (?:just|only|merely) [^.!?\n]{1,80}?\b(?:but|it'?s|it is)\b/gi},
+ {label:'Cliché set-ups', w:4, re:/\b(?:here'?s the thing|let'?s (?:dive|break (?:it|this) down|explore|unpack)|the bottom line|at the end of the day|in today'?s (?:world|landscape|era)|when it comes to|imagine a world|picture this|buckle up)\b/gi},
+ {label:'Grand closers', w:5, re:/\b(?:the future is (?:bright|here|now)|only time will tell|the possibilities are endless|one thing is (?:clear|certain)|the journey (?:ahead|continues))\b/gi}
+];
+const TRIPLET_RE = /\b[\w'-]+(?:\s[\w'-]+){0,2},\s[\w'-]+(?:\s[\w'-]+){0,2},?\s(?:and|or)\s[\w'-]+/gi;
+function openerStats(text){
+  const firsts = splitSentences(text).map(s=>wordsOf(s)[0]).filter(Boolean);
+  const c={}; let run=1, maxRun=1;
+  firsts.forEach((w,i)=>{ c[w]=(c[w]||0)+1; if(i&&w===firsts[i-1]){ run++; maxRun=Math.max(maxRun,run); } else run=1; });
+  const top = Object.entries(c).sort((a,b)=>b[1]-a[1])[0] || ['',0];
+  return {word:top[0], share: firsts.length? top[1]/firsts.length : 0, maxRun};
+}
+function paraCV(text){
+  const lens = text.split(/\n\s*\n/).map(x=>x.trim()).filter(x=>x && !/^#/.test(x)).map(x=>wordsOf(x).length);
+  if(lens.length<4) return null;
+  const m=mean(lens); return m? sd(lens)/m : null;
+}
+function humanCheck(text){
+  const p = state.profile, mine = p.metrics;
+  const own = normQuotes(p.sampleText||'').toLowerCase();
+  const t = normQuotes(text);
+  const m = stylometrics(t);
+  const issues=[]; let penalty=0;
+  // 1. phrases (anything you use yourself in your samples is allowed)
+  AI_PATTERNS.forEach(pt=>{
+    const found = (t.match(pt.re)||[]).map(x=>x.replace(/^[.!?\s]+/,'').trim()).filter(x=>x && !own.includes(x.toLowerCase()));
+    if(found.length){
+      const uniq=[...new Set(found.map(x=>x.toLowerCase()))];
+      const pen = Math.min(20, pt.w*found.length); penalty += pen;
+      issues.push({label:pt.label, detail:uniq.slice(0,10).join(', ')+(found.length>1?` (${found.length}×)`:''), fix:`Remove or reword these in plain language the author would use: ${uniq.join(', ')}`, pen});
+    }
+  });
+  // 2. sentence rhythm (burstiness)
+  const cv = m.avgSentLen? m.sentLenSD/m.avgSentLen : 0, ucv = mine.avgSentLen? mine.sentLenSD/mine.avgSentLen : 0.5;
+  if(m.sentences>=5 && cv < Math.min(0.45, ucv*0.8)){
+    penalty+=12; issues.push({label:'Uniform sentence rhythm', detail:`length variation ${cv.toFixed(2)} vs yours ${ucv.toFixed(2)}`, fix:`Vary sentence length much more, like the author does: mix some very short sentences (3–7 words) with longer ones and break up runs of similar-length sentences. Target average ≈ ${mine.avgSentLen.toFixed(0)} words, SD ≈ ${mine.sentLenSD.toFixed(0)}.`, pen:12});
+  }
+  // 3. dashes
+  const dashLimit = Math.max(mine.dashes*1.5, mine.dashes+0.4);
+  if(m.dashes > dashLimit){
+    penalty+=8; issues.push({label:'Too many dashes', detail:`${m.dashes.toFixed(1)} per 100 words vs yours ${mine.dashes.toFixed(1)}`, fix:`Cut dashes (— –) to at most ${dashLimit.toFixed(1)} per 100 words; use commas, full stops or brackets instead.`, pen:8});
+  }
+  // 4. tidy "X, Y and Z" triplets
+  const tri = (t.match(TRIPLET_RE)||[]).length/Math.max(m.sentences,1);
+  const utri = (own.match(TRIPLET_RE)||[]).length/Math.max(mine.sentences,1);
+  if(tri > Math.max(utri*1.5, 0.12)){
+    penalty+=8; issues.push({label:'Too many lists of three', detail:`${(tri*100).toFixed(0)} per 100 sentences vs yours ${(utri*100).toFixed(0)}`, fix:'Break up the "X, Y and Z" groupings: use one or two items, or spread them across sentences.', pen:8});
+  }
+  // 5. repetitive openers
+  const os = openerStats(t), uos = openerStats(own);
+  if(m.sentences>=6 && (os.share > Math.max(0.2, uos.share+0.08) || os.maxRun>=3)){
+    penalty+=6; issues.push({label:'Repetitive sentence openings', detail:`"${os.word}" starts ${(os.share*100).toFixed(0)}% of sentences${os.maxRun>=3?`, ${os.maxRun} in a row`:''}`, fix:`Vary how sentences start; reduce sentences beginning with "${os.word}".`, pen:6});
+  }
+  // 6. uniform paragraphs
+  const pcv = paraCV(t);
+  if(pcv!==null && pcv < 0.25){
+    penalty+=6; issues.push({label:'Paragraphs all the same length', detail:`variation ${pcv.toFixed(2)}`, fix:'Vary paragraph length: allow a one- or two-sentence paragraph and a longer one where it fits.', pen:6});
+  }
+  // 7. formality
+  if(mine.contractions>=1.5 && m.contractions < mine.contractions*0.5){
+    penalty+=8; issues.push({label:'Too formal for you', detail:`contractions ${m.contractions.toFixed(1)}/100 vs yours ${mine.contractions.toFixed(1)}`, fix:`Use contractions (it's, don't, we're) about as often as the author: ≈ ${mine.contractions.toFixed(1)} per 100 words.`, pen:8});
+  }
+  // 8. overall style distance
+  const sim = styleSimilarity(mine, m);
+  if(sim.score < 78){
+    const worst = METRIC_DEFS.map((d,i)=>({d, s:sim.per[i]})).sort((a,b)=>a.s-b.s).slice(0,3)
+      .map(x=>`${x.d[1]}: now ${m[x.d[0]].toFixed(1)}, target ${mine[x.d[0]].toFixed(1)}`);
+    const pen = Math.round((78-sim.score)*0.8); penalty+=pen;
+    issues.push({label:'Doesn\'t sound enough like you', detail:`style match ${sim.score}%`, fix:'Move closer to the author\'s measured style: '+worst.join('; ')+'.', pen});
+  }
+  return {score: Math.max(0, 100-penalty), issues, sim: sim.score};
+}
+async function humanizePass(text, issues){
+  const brief = issues.map((i,n)=>`${n+1}. ${i.label} (${i.detail}). Fix: ${i.fix}`).join('\n');
+  const parts = wordsOf(text).length > 1400 ? chunkText(text, 900) : [text];
+  const out=[];
+  for(const part of parts){
+    const r = await claude({
+      max_tokens: 8000,
+      system: `You are an editor who makes drafts sound like they were written by one specific human author, not by AI.\n\n${styleBrief()}`,
+      messages:[{role:'user', content:`<draft>\n${part}\n</draft>\n\nAn automated check found these problems in the draft:\n${brief}\n\nRevise the draft to fix every problem. Rules:\n- Keep every fact, number, name, technical term, heading and quotation.\n- Don't add new content and don't summarize; keep length within ±10%.\n- Don't introduce any new AI-sounding phrases or tidy "lists of three".\n- Write only in the author's voice, including their quirks and informality.\nOutput ONLY the revised text.`}]
+    });
+    out.push(r.text.trim().replace(/^```\w*\n?|```$/g,''));
+  }
+  return out.join('\n\n');
+}
+async function humanizeLoop(text, source, rounds, target, startRound=1){
+  const evalT = t => { const h=humanCheck(t), p=localPlagiarism(t,source); const plagOk = p.coveredPct<1 && p.flagged.length===0; return {text:t, h, p, plagOk, combined: h.score + p.originality + (plagOk?20:0)}; };
+  let best = evalT(text);
+  const history = startRound===1 ? [{round:0, human:best.h.score, orig:best.p.originality, style:best.h.sim, note:best.h.issues.map(i=>i.label).join(', ')||'No issues', kept:true}] : [];
+  log(`Human score ${best.h.score}/100 (target ${target})${best.h.issues.length?' · '+best.h.issues.map(i=>i.label).join(', '):''}`);
+  for(let r=0; r<rounds; r++){
+    const n = startRound + r;
+    if(best.h.score>=target && best.plagOk){ log('Humanization target reached ✓'); break; }
+    let t;
+    try{
+      if(best.h.score>=target){ log(`Loop ${n}: style is fine, fixing remaining plagiarism…`); t = await fixFlagged(best.text, best.p, source); }
+      else { log(`Loop ${n}: fixing ${best.h.issues.length} humanization issue(s)…`); t = await humanizePass(best.text, best.h.issues); }
+    }catch(e){ log(`Loop ${n} failed: ${e.message}`); break; }
+    let c = evalT(t);
+    if(!c.plagOk){ log('Humanizing brought back some overlap; fixing it…'); try{ t = await fixFlagged(t, c.p, source); c = evalT(t); }catch(e){ log('Fix failed: '+e.message); } }
+    const better = c.combined >= best.combined;
+    history.push({round:n, human:c.h.score, orig:c.p.originality, style:c.h.sim, note:c.h.issues.map(i=>i.label).join(', ')||'No issues', kept:better});
+    log(`→ Human ${c.h.score}/100 · originality ${c.p.originality}% · style match ${c.h.sim}%${better?'':' (scored lower, kept previous version)'}`);
+    if(better) best = c;
+  }
+  if(best.h.score < target) log(`Best human score ${best.h.score}/100. Tap "Humanize again" to run more rounds.`);
+  return {text: best.text, history};
+}
+
 $('#rewriteBtn').onclick = async ()=>{
   const source = $('#source').value.trim();
   if(!state.profile){ alert('Create your style profile first (step 2).'); go(2); return; }
@@ -736,6 +860,14 @@ $('#rewriteBtn').onclick = async ()=>{
       text = await fixFlagged(text, res, source);
       res = localPlagiarism(text, source);
       log(`→ Originality ${res.originality}% · ${res.coveredPct.toFixed(1)}% copied · ${res.flagged.length} close sentences`);
+    }
+    const hRounds = +$('#hRounds').value;
+    state.hHistory = [];
+    if(hRounds>0){
+      log('Starting humanize loop…');
+      const hl = await humanizeLoop(text, source, hRounds, +$('#hTarget').value);
+      text = hl.text; state.hHistory = hl.history;
+      res = localPlagiarism(text, source);
     }
     state.rewrite = text; state.result = res;
     if($('#webCheck').value==='on'){
@@ -756,6 +888,7 @@ function renderResults(){
   const mine = state.profile.metrics, out = stylometrics(text), src = stylometrics(state.source);
   const simOut = styleSimilarity(mine,out), simSrc = styleSimilarity(mine,src);
   const tells = aiTellCount(text);
+  const hc = humanCheck(text), target = +$('#hTarget').value;
   const web = state.web;
   const webMatches = web && web.results ? web.results.filter(x=>x.status==='match').length : 0;
   const webSimilar = web && web.results ? web.results.filter(x=>x.status==='similar').length : 0;
@@ -765,12 +898,19 @@ function renderResults(){
     : `<span class="warn">⚠ Needs attention:</span> ${res.coveredPct>=1?res.coveredPct.toFixed(1)+'% of words come from copied runs. ':''}${res.flagged.length?res.flagged.length+' sentence(s) are still close to the original. ':''}${webMatches?webMatches+' web match(es). ':''}Click <b>Fix flagged parts</b>.`;
   $('#scores').innerHTML = `
     <div class="score"><div class="n ${cls(res.originality,90,75)}">${res.originality}%</div><div class="l">Originality vs source</div></div>
+    <div class="score"><div class="n ${cls(hc.score,target,70)}">${hc.score}</div><div class="l">Human score (target ${target})</div></div>
     <div class="score"><div class="n ${cls(simOut.score,80,65)}">${simOut.score}%</div><div class="l">Style match to you (source was ${simSrc.score}%)</div></div>
     <div class="score"><div class="n ${web&&web.results? (webMatches?'bad':(webSimilar?'warn':'good')) : ''}">${web&&web.results? (webMatches? webMatches+' match':'Clear') : (web&&web.error?'Error':'Off')}</div><div class="l">Web search check</div></div>`;
   // text views
   if(view==='hl') $('#outView').innerHTML = renderHighlighted(text,res);
   else if(view==='clean') $('#outView').textContent = text;
   else $('#outView').textContent = state.source;
+  // humanization details
+  const hist = state.hHistory||[];
+  $('#humanDetails').innerHTML = `
+    <p class="sub">${hc.score>=target?'<span class="good">✓ Passes.</span> Reads like your writing, with no AI-sounding patterns flagged.':'<span class="warn">⚠ Below target.</span> Tap <b>Humanize again</b> to run more loop rounds.'} Phrases you use yourself in your samples are never flagged.</p>
+    ${hc.issues.length?`<table><tr><th>Issue</th><th>Details</th><th class="num">−pts</th></tr>${hc.issues.map(i=>`<tr><td>${esc(i.label)}</td><td>${esc(i.detail)}</td><td class="num warn">${i.pen}</td></tr>`).join('')}</table>`:'<p class="good">No issues found.</p>'}
+    ${hist.length?`<h3>Loop history</h3><table><tr><th>Round</th><th class="num">Human</th><th class="num">Original</th><th class="num">Style</th><th>Kept</th></tr>${hist.map(x=>`<tr><td>${x.round===0?'Initial':'Loop '+x.round}</td><td class="num ${cls(x.human,target,70)}">${x.human}</td><td class="num">${x.orig}%</td><td class="num">${x.style}%</td><td>${x.kept?'✓':'—'}</td></tr>`).join('')}</table>`:''}`;
   // plagiarism details
   $('#plagDetails').innerHTML = `
     <table>
@@ -811,6 +951,20 @@ $('#fixBtn').onclick = async ()=>{
   const b=$('#fixBtn'); busy(b,true,'Fixing…');
   try{ $('#log').textContent=''; state.rewrite = await fixFlagged(state.rewrite, state.result, state.source); state.result=localPlagiarism(state.rewrite,state.source); renderResults(); }
   catch(e){ alert('Fix failed: '+e.message); }
+  busy(b,false);
+};
+
+$('#humanBtn').onclick = async ()=>{
+  const b=$('#humanBtn'); busy(b,true,'Humanizing…');
+  try{
+    $('#log').textContent='';
+    const hist = state.hHistory||[];
+    const start = hist.length ? Math.max(...hist.map(x=>x.round))+1 : 1;
+    if(!hist.length){ const h0=humanCheck(state.rewrite), p0=localPlagiarism(state.rewrite,state.source); hist.push({round:0, human:h0.score, orig:p0.originality, style:h0.sim, note:'', kept:true}); }
+    const hl = await humanizeLoop(state.rewrite, state.source, 2, (humanCheck(state.rewrite).score >= +$('#hTarget').value ? 101 : +$('#hTarget').value), start);
+    state.rewrite = hl.text; state.hHistory = hist.concat(hl.history);
+    state.result = localPlagiarism(state.rewrite, state.source); renderResults();
+  }catch(e){ alert('Humanize failed: '+e.message); }
   busy(b,false);
 };
 
