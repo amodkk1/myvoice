@@ -199,6 +199,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
       <button class="btn primary" id="rewriteBtn">Rewrite in my style &amp; check →</button>
     </div>
     <div id="progressWrap" class="hidden" style="margin-top:14px">
+      <p class="sub" style="margin:0 0 6px">Keep this screen open while it runs. Switching apps can cut the connection.</p>
       <div class="log" id="log"></div>
     </div>
   </section>
@@ -238,7 +239,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
     <div class="card"><h2>Web search check</h2><div id="webDetails"><p class="sub">Not run.</p></div></div>
   </section>
 </main>
-<footer><b>MyVoice v1.6</b> · updated 20 Nov 2026 · new logo &amp; home-screen icon<br>All analysis runs in your browser except the Claude API calls</footer>
+<footer><b>MyVoice v1.7</b> · updated 20 Nov 2026 · stable connection for audit &amp; web search<br>All analysis runs in your browser except the Claude API calls</footer>
 
 <script>
 /* ================= utilities ================= */
@@ -483,6 +484,54 @@ function renderHighlighted(rewrite, res){
 
 /* ================= Claude API ================= */
 function getModel(){ const m=$('#model').value; return m==='custom' ? ($('#customModel').value.trim()||'claude-sonnet-5-5') : m; }
+/* Streaming API call: data keeps flowing while Claude works, so mobile networks
+   don't drop long requests (audit, web search). Retries dropped connections. */
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+async function streamOnce(key, body){
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method:'POST',
+    headers:{'content-type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+    body: JSON.stringify(Object.assign({}, body, {stream:true}))
+  });
+  if(!res.ok){
+    let msg = res.status+' '+res.statusText;
+    try{ const j=await res.json(); msg = (j.error && j.error.message) || msg; }catch(e){}
+    const err = new Error(msg); err.status = res.status; throw err;
+  }
+  const reader = res.body.getReader(), dec = new TextDecoder();
+  let buf='', msg={content:[], stop_reason:null};
+  const blocks = [];
+  const handle = (ev, data) => {
+    if(ev==='message_start'){ msg = Object.assign(msg, data.message, {content:[]}); }
+    else if(ev==='content_block_start'){ const b = Object.assign({}, data.content_block); if(b.type==='tool_use'||b.type==='server_tool_use'){ b._json=''; } blocks[data.index]=b; }
+    else if(ev==='content_block_delta'){
+      const b=blocks[data.index], d=data.delta; if(!b) return;
+      if(d.type==='text_delta') b.text=(b.text||'')+d.text;
+      else if(d.type==='input_json_delta') b._json+=d.partial_json;
+      else if(d.type==='citations_delta') (b.citations=b.citations||[]).push(d.citation);
+      else if(d.type==='thinking_delta') b.thinking=(b.thinking||'')+d.thinking;
+      else if(d.type==='signature_delta') b.signature=d.signature;
+    }
+    else if(ev==='content_block_stop'){ const b=blocks[data.index]; if(b && '_json' in b){ try{ b.input = b._json ? JSON.parse(b._json) : (b.input||{}); }catch(e){ b.input = null; b._broken = true; } delete b._json; } }
+    else if(ev==='message_delta'){ if(data.delta && data.delta.stop_reason) msg.stop_reason = data.delta.stop_reason; }
+    else if(ev==='error'){ const e = new Error((data.error&&data.error.message)||'Stream error'); e.status = (data.error&&data.error.type==='overloaded_error')?529:500; throw e; }
+  };
+  while(true){
+    const {value, done} = await reader.read();
+    if(done) break;
+    buf += dec.decode(value, {stream:true});
+    let i;
+    while((i = buf.indexOf('\n\n')) >= 0){
+      const chunk = buf.slice(0,i); buf = buf.slice(i+2);
+      let ev='message', data='';
+      chunk.split('\n').forEach(line=>{ if(line.startsWith('event:')) ev=line.slice(6).trim(); else if(line.startsWith('data:')) data+=line.slice(5).trim(); });
+      if(data && ev!=='ping'){ try{ handle(ev, JSON.parse(data)); }catch(e){ if(e instanceof SyntaxError) continue; throw e; } }
+    }
+  }
+  if(!msg.stop_reason) { const e = new Error('Connection closed before Claude finished'); e.network = true; throw e; }
+  msg.content = blocks.filter(Boolean);
+  return msg;
+}
 async function claude({system, messages, max_tokens=4096, tools, tool_choice, temperature}){
   const key = $('#apiKey').value.trim();
   if(!key) throw new Error('Add your Anthropic API key in step 1.');
@@ -493,23 +542,25 @@ async function claude({system, messages, max_tokens=4096, tools, tool_choice, te
     if(tools) body.tools = tools;
     if(tool_choice) body.tool_choice = tool_choice;
     if(temperature!=null) body.temperature = temperature;
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method:'POST',
-      headers:{'content-type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body: JSON.stringify(body)
-    });
-    if(!res.ok){
-      let msg = res.status+' '+res.statusText;
-      try{ const j=await res.json(); msg = (j.error && j.error.message) || msg; }catch(e){}
-      throw new Error(msg);
+    let data, lastErr;
+    for(let attempt=0; attempt<3; attempt++){
+      try{ data = await streamOnce(key, body); break; }
+      catch(e){
+        lastErr = e;
+        const retryable = e.network || e instanceof TypeError || [408,429,500,502,503,504,529].includes(e.status);
+        if(!retryable || attempt===2) throw (e instanceof TypeError ? new Error('Connection to Anthropic dropped ('+e.message+'). Check your internet connection and keep the app open while it runs.') : e);
+        const wait = attempt===0 ? 3000 : 8000;
+        try{ log(`Connection issue (${e.message}). Retrying in ${wait/1000}s…`); }catch(_){}
+        await sleep(wait);
+      }
     }
-    const data = await res.json();
+    if(!data) throw lastErr;
     allContent = allContent.concat(data.content||[]);
-    if(data.stop_reason === 'pause_turn'){ msgs = msgs.concat([{role:'assistant', content:data.content}]); continue; }
-    const tu = allContent.find(b=>b.type==='tool_use');
-    return {data, content:allContent, text: allContent.filter(b=>b.type==='text').map(b=>b.text).join(''), toolInput: tu ? tu.input : null, stop: data.stop_reason};
+    if(data.stop_reason === 'pause_turn'){ msgs = msgs.concat([{role:'assistant', content:data.content.map(b=>{ const c=Object.assign({},b); delete c._broken; return c; })}]); continue; }
+    const tu = allContent.find(b=>b.type==='tool_use' && b.input && !b._broken);
+    return {data, content:allContent, text: allContent.filter(b=>b.type==='text').map(b=>b.text||'').join(''), toolInput: tu ? tu.input : null, stop: data.stop_reason};
   }
-  return {content:allContent, text: allContent.filter(b=>b.type==='text').map(b=>b.text).join('')};
+  return {content:allContent, text: allContent.filter(b=>b.type==='text').map(b=>b.text||'').join(''), toolInput:null, stop:'pause_turn'};
 }
 function parseJSON(text){
   const t = text.replace(/```json|```/g,'');
@@ -776,7 +827,7 @@ async function webCheck(text){
   log('Searching the web for matching sentences…');
   const r = await claude({
     max_tokens: 3000,
-    tools:[{type:'web_search_20250305', name:'web_search', max_uses:8}],
+    tools:[{type:'web_search_20250305', name:'web_search', max_uses:6}],
     system:'You are a plagiarism checker. You must use the web_search tool. Be strict and factual: only report a match if a search result really contains the same or nearly identical wording.',
     messages:[{role:'user', content:`Check whether these sentences (or near-identical versions) already exist on the web. Search each one, using a distinctive 6–10 word chunk in quotes. Report what you find.
 
@@ -943,9 +994,9 @@ function auditPersona(){
     ? 'You are a senior telecommunications technical editor and experienced solutions architect (RAN, core, transport, OSS/BSS, autonomous networks, 3GPP/O-RAN/TM Forum). You are rigorous, specific and fair.'
     : 'You are a senior technical editor. You are rigorous, specific and fair.';
 }
-async function runAudit(text, before){
+async function runAudit(text, before, compact=false){
   const r = await claude({
-    max_tokens: 8000,
+    max_tokens: 16000,
     tools:[AUDIT_TOOL], tool_choice:{type:'tool', name:'report_audit'},
     system: auditPersona() + ' Never claim that an AI detector can reliably verify human authorship; judge writing on its merits.',
     messages:[{role:'user', content:`Review the article below for technical credibility, authentic writing voice, repetitive AI-style patterns, original thought leadership and commercial relevance.
@@ -955,15 +1006,20 @@ ${AUDIT_CATS.map((c,i)=>`${i+1}. ${c}`).join('\n')}
 
 ${RUBRIC}
 
-For each category: give the score, explain it against the rubric, quote 1–4 specific problematic excerpts exactly as written, explain why each needs improvement, and propose a concrete revision that introduces no unsupported claims. If a category is genuinely strong, say so and give fewer findings.
+For each category: give the score, explain it against the rubric in 1–2 sentences, quote ${compact?'1':'1–3'} specific problematic excerpts exactly as written (max 25 words each), explain why each needs improvement, and propose a concrete revision that introduces no unsupported claims. If a category is genuinely strong, say so and give fewer findings.
 Then give the 10 highest-priority changes (as instructions, without quoting the article), and flag every fact, statistic, figure or attributed claim that needs source verification.
 ${before?`\nThis is a REVISED version. The previous version's scores were: ${before.categories.map(c=>`${c.name}: ${c.score}`).join('; ')}. Also fill "improvements": explain concretely how this revision improves authenticity and technical value compared with the previous version (and note anything that got worse).\n`:''}
 <article>
 ${text}
 </article>`}]
   });
-  if(!r.toolInput) throw new Error('Audit returned no result');
+  if(!r.toolInput || !Array.isArray(r.toolInput.categories) || !r.toolInput.categories.length){
+    if(!compact){ log(r.stop==='max_tokens' ? 'Audit was too long; retrying in compact mode…' : 'Audit came back incomplete; retrying in compact mode…'); return runAudit(text, before, true); }
+    throw new Error(r.stop==='max_tokens' ? 'Audit response was cut off (too long)' : 'Audit returned no result');
+  }
   const a = r.toolInput;
+  a.top_changes = a.top_changes||[]; a.facts_to_verify = a.facts_to_verify||[];
+  a.categories.forEach(c=>{ c.findings = c.findings||[]; c.score = Math.max(1, Math.min(10, Math.round(+c.score||0))); });
   a.categories = (a.categories||[]).slice(0,9);
   a.avg = a.categories.length ? mean(a.categories.map(c=>+c.score||0)) : 0;
   return a;
@@ -988,16 +1044,17 @@ $('#rewriteBtn').onclick = async ()=>{
   if(!state.profile){ alert('Create your style profile first (step 2).'); go(2); return; }
   if(wordsOf(source).length<40){ alert('Paste a longer text (at least ~40 words).'); return; }
   const b=$('#rewriteBtn'); busy(b,true,'Working…');
+  let wake=null; try{ if(navigator.wakeLock) wake = await navigator.wakeLock.request('screen'); }catch(e){}
   $('#progressWrap').classList.remove('hidden'); $('#log').textContent='';
   state.source = source; state.web=null;
   try{
     state.audit = null;
     const doAudit = $('#audit').value==='on';
-    let auditBefore = null;
+    let auditBefore = null, auditErr = '';
     if(doAudit){
       log('Editorial audit of the original (9 categories)…');
       try{ auditBefore = await runAudit(source); log(`Original averages ${auditBefore.avg.toFixed(1)}/10`); }
-      catch(e){ log('Audit failed: '+e.message+' (continuing without it)'); }
+      catch(e){ auditErr = e.message; log('Audit failed: '+e.message+' (continuing without it)'); }
     }
     let text = await rewriteText(source, auditGuidance(auditBefore));
     log('Checking against the original (5-word overlap + sentence similarity)…');
@@ -1039,7 +1096,7 @@ $('#rewriteBtn').onclick = async ()=>{
       }catch(e){ log('Audit step failed: '+e.message); }
       state.audit = {before: auditBefore, after: auditAfter};
       res = localPlagiarism(text, source);
-    } else if(doAudit) state.audit = {error:'The audit of the original failed, so it was skipped.'};
+    } else if(doAudit) state.audit = {error:'The audit of the original failed'+(auditErr?': '+auditErr:'')+'.'};
     state.rewrite = text; state.result = res;
     if($('#webCheck').value==='on'){
       try{ state.web = await webCheck(text); log('Web search done.'); }
@@ -1048,6 +1105,7 @@ $('#rewriteBtn').onclick = async ()=>{
     log('Done ✓');
     renderResults(); go(4);
   }catch(e){ log('ERROR: '+e.message); alert('Something went wrong: '+e.message); }
+  try{ if(wake) wake.release(); }catch(e){}
   busy(b,false);
 };
 
@@ -1080,7 +1138,14 @@ function renderResults(){
   // editorial audit
   const au = state.audit;
   if(!au) $('#auditDetails').innerHTML = '<p class="sub">Audit was off for this run.</p>';
-  else if(au.error) $('#auditDetails').innerHTML = `<div class="notice warnbox">${esc(au.error)}</div>`;
+  else if(au.error){
+    $('#auditDetails').innerHTML = `<div class="notice warnbox">${esc(au.error)}</div><button class="btn small" id="retryAudit" style="margin-top:8px">Run audit now</button>`;
+    $('#retryAudit').onclick = async ()=>{
+      const b=$('#retryAudit'); busy(b,true,'Auditing original…'); $('#progressWrap').classList.remove('hidden');
+      try{ const B = await runAudit(state.source); b.innerHTML='<span class="spinner"></span> Auditing your version…'; const A = await runAudit(state.rewrite, B); state.audit={before:B, after:A}; renderResults(); }
+      catch(e){ state.audit={error:'Audit failed again: '+e.message+'.'}; renderResults(); }
+    };
+  }
   else {
     const B=au.before, A=au.after;
     const sc = v => v==null?'—':`<span class="${cls(v,8,6)}">${v}</span>`;
@@ -1138,7 +1203,7 @@ function renderResults(){
     <p class="sub" style="margin-top:8px">Green means the rewrite is close to your numbers. Some metrics, like "I/we" use, also depend on the subject matter.</p>`;
   // web
   if(!web) $('#webDetails').innerHTML = `<p class="sub">Web search was off. <button class="btn small" id="runWeb">Run web check now</button></p>`;
-  else if(web.error) $('#webDetails').innerHTML = `<div class="notice warnbox">Web search failed: ${esc(web.error)}. If it says web search isn't enabled, an admin needs to turn on web search in the Anthropic Console (Settings → Privacy/Features). The local check above still works.</div><button class="btn small" id="runWeb" style="margin-top:8px">Retry web check</button>`;
+  else if(web.error) $('#webDetails').innerHTML = `<div class="notice warnbox">Web search failed: ${esc(web.error)}. ${/not enabled|not allowed|permission/i.test(web.error)?'Web search needs to be turned on for your organization in the Anthropic Console.':'This is usually a dropped mobile connection. Keep the app open and tap Retry.'} The local check above still works.</div><button class="btn small" id="runWeb" style="margin-top:8px">Retry web check</button>`;
   else $('#webDetails').innerHTML = `<p class="sub">The 5 most distinctive sentences were searched on the web. This samples the text; it is not a full-web scan like Turnitin's database.</p>
      <table><tr><th>Sentence</th><th>Result</th></tr>${(web.results||[]).map(x=>`<tr><td>${esc(x.sentence)}<div class="sub" style="margin:2px 0 0">${esc(x.note||'')} ${x.url?`<a href="${esc(x.url)}" target="_blank" rel="noopener">source</a>`:''}</div></td><td class="${x.status==='match'?'bad':(x.status==='similar'?'warn':'good')}">${esc(x.status)}</td></tr>`).join('')}</table>
      <button class="btn small" id="runWeb" style="margin-top:8px">Run again</button>`;
