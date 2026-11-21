@@ -126,19 +126,24 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
   <!-- STEP 1 -->
   <section id="s1" class="card">
     <h2>Setup</h2>
-    <p class="sub">The rewriting and web plagiarism search use Claude through the Anthropic API. Your key stays in this browser only (saved locally if you tick the box) and is sent straight to api.anthropic.com, nowhere else.</p>
-    <label>Anthropic API key</label>
-    <input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off">
-    <div class="chk"><input type="checkbox" id="rememberKey" checked><span>Remember key on this device</span></div>
+    <p class="sub">Pick which AI does the rewriting, auditing and web plagiarism search. Your API key stays in this browser only and is sent straight to that company's API, nowhere else.</p>
+    <label>AI provider</label>
+    <select id="provider">
+      <option value="anthropic">Anthropic (Claude)</option>
+      <option value="openai">OpenAI (ChatGPT / GPT)</option>
+      <option value="gemini">Google (Gemini)</option>
+    </select>
+    <label id="keyLabel">API key</label>
+    <input type="password" id="apiKey" placeholder="" autocomplete="off">
+    <p class="sub" style="margin:6px 0 0">Don't have a key? <a id="keyLink" href="#" target="_blank" rel="noopener">Get one here</a>. Each provider bills you separately for usage.</p>
+    <div class="chk"><input type="checkbox" id="rememberKey" checked><span>Remember keys on this device</span></div>
     <div class="row">
-      <div><label>Model</label>
-        <select id="model">
-          <option value="claude-sonnet-5-5">Claude Sonnet 5.5 (recommended)</option>
-          <option value="claude-opus-5-5">Claude Opus 5.5 (best quality, slower)</option>
-          <option value="claude-haiku-5-5">Claude Haiku 5.5 (fastest, cheapest)</option>
-          <option value="custom">Custom model ID…</option>
-        </select></div>
-      <div id="customWrap" class="hidden"><label>Custom model ID</label><input type="text" id="customModel" placeholder="e.g. claude-sonnet-5-5"></div>
+      <div><label>Model</label><select id="model"></select></div>
+      <div id="customWrap" class="hidden"><label>Custom model ID</label><input type="text" id="customModel" placeholder="exact model ID"></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn small" id="loadModels">Load my models</button>
+      <span class="sub" id="modelsStatus" style="margin:0;flex:1">Lists every model your key can use, so you're never stuck with an outdated name.</span>
     </div>
     <div class="row" style="margin-top:14px">
       <button class="btn" id="testKey">Test connection</button>
@@ -182,7 +187,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
       <div><label>Auto-fix rounds if plagiarism found</label>
         <select id="rounds"><option>0</option><option>1</option><option selected>2</option><option>3</option></select></div>
       <div><label>Web plagiarism search</label>
-        <select id="webCheck"><option value="on" selected>On (uses Claude web search)</option><option value="off">Off (local check only)</option></select></div>
+        <select id="webCheck"><option value="on" selected>On (uses the AI's web search)</option><option value="off">Off (local check only)</option></select></div>
       <div><label>Humanize loop rounds</label>
         <select id="hRounds"><option>0</option><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></div>
       <div><label>Target human score</label>
@@ -239,7 +244,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
     <div class="card"><h2>Web search check</h2><div id="webDetails"><p class="sub">Not run.</p></div></div>
   </section>
 </main>
-<footer><b>MyVoice v1.7</b> · updated 20 Nov 2026 · stable connection for audit &amp; web search<br>All analysis runs in your browser except the Claude API calls</footer>
+<footer><b>MyVoice v1.8</b> · updated 20 Nov 2026 · Claude, ChatGPT &amp; Gemini support<br>All analysis runs in your browser except the AI API calls</footer>
 
 <script>
 /* ================= utilities ================= */
@@ -254,7 +259,7 @@ const idb = {
   async set(k,v){ const db=await this.open(); if(!db) return; try{ db.transaction('kv','readwrite').objectStore('kv').put(v,k); }catch(e){} },
   async del(k){ const db=await this.open(); if(!db) return; try{ db.transaction('kv','readwrite').objectStore('kv').delete(k); }catch(e){} }
 };
-const BACKUP_KEYS = ['profile','samples','key','model','customModel'];
+const BACKUP_KEYS = ['profile','samples','key','model','customModel','keys','models','customModels','provider','modelLists'];
 const store = {
   get(k, d){ try{ const v = localStorage.getItem('myvoice_'+k); return v==null ? d : JSON.parse(v); }catch(e){ return d; } },
   set(k, v){ try{ localStorage.setItem('myvoice_'+k, JSON.stringify(v)); }catch(e){} if(BACKUP_KEYS.includes(k)) idb.set(k, v); },
@@ -483,7 +488,16 @@ function renderHighlighted(rewrite, res){
 }
 
 /* ================= Claude API ================= */
-function getModel(){ const m=$('#model').value; return m==='custom' ? ($('#customModel').value.trim()||'claude-sonnet-5-5') : m; }
+const PROVIDERS = {
+  anthropic:{ name:'Claude', keyLabel:'Anthropic API key', hint:'sk-ant-...', keyUrl:'https://console.anthropic.com/settings/keys', def:'claude-sonnet-5-5',
+    models:[['claude-opus-5-5','Claude Opus 5.5 (best quality)'],['claude-sonnet-5-5','Claude Sonnet 5.5 (recommended)'],['claude-haiku-5-5','Claude Haiku 5.5 (fastest, cheapest)']] },
+  openai:{ name:'ChatGPT', keyLabel:'OpenAI API key', hint:'sk-...', keyUrl:'https://platform.openai.com/api-keys', def:'gpt-6.2-sol',
+    models:[['gpt-6.2-astra','GPT-6.2 Astra (most capable)'],['gpt-6.2-sol','GPT-6.2 Sol (balanced, recommended)'],['gpt-6.1-terra','GPT-6.1 Terra (fast)'],['gpt-6-luna','GPT-6 Luna (cheapest)']] },
+  gemini:{ name:'Gemini', keyLabel:'Google Gemini API key', hint:'AIza...', keyUrl:'https://aistudio.google.com/apikey', def:'gemini-flash-latest',
+    models:[['gemini-4-argon','Gemini 4 Argon (flagship, paid tier)'],['gemini-3.1-pro-preview','Gemini 3.1 Pro (preview)'],['gemini-flash-latest','Gemini Flash, latest (recommended)'],['gemini-3.5-flash-lite','Gemini 3.5 Flash-Lite (cheapest)']] }
+};
+function provider(){ return $('#provider').value || 'anthropic'; }
+function getModel(){ const m=$('#model').value; return m==='custom' ? ($('#customModel').value.trim()||PROVIDERS[provider()].def) : (m||PROVIDERS[provider()].def); }
 /* Streaming API call: data keeps flowing while Claude works, so mobile networks
    don't drop long requests (audit, web search). Retries dropped connections. */
 const sleep = ms => new Promise(r=>setTimeout(r,ms));
@@ -532,7 +546,93 @@ async function streamOnce(key, body){
   msg.content = blocks.filter(Boolean);
   return msg;
 }
-async function claude({system, messages, max_tokens=4096, tools, tool_choice, temperature}){
+async function sseRead(res, onEvent){
+  const reader=res.body.getReader(), dec=new TextDecoder(); let buf='';
+  const flush = chunk => {
+    let ev='message', data='';
+    chunk.split('\n').forEach(line=>{ if(line.startsWith('event:')) ev=line.slice(6).trim(); else if(line.startsWith('data:')) data+=line.slice(5).trim(); });
+    if(!data || data==='[DONE]' || ev==='ping') return;
+    let j; try{ j=JSON.parse(data); }catch(e){ return; }
+    onEvent(ev, j);
+  };
+  while(true){
+    const {value, done} = await reader.read(); if(done) break;
+    buf = (buf + dec.decode(value, {stream:true})).replace(/\r\n/g,'\n');
+    let i; while((i=buf.indexOf('\n\n'))>=0){ flush(buf.slice(0,i)); buf=buf.slice(i+2); }
+  }
+  if(buf.trim()) flush(buf);
+}
+async function httpError(res){
+  let msg = res.status+' '+res.statusText;
+  try{ let j=await res.json(); if(Array.isArray(j)) j=j[0]; msg = (j.error && (j.error.message||j.error)) || j.message || msg; }catch(e){}
+  if(res.status===404 || /not found|does not exist|not supported for/i.test(msg)) msg += ' — tap "Load my models" in step 1 to pick a model your key can use.';
+  const err = new Error(msg); err.status = res.status; return err;
+}
+const netDrop = () => { const e=new Error('Connection closed before the AI finished'); e.network=true; return e; };
+const flatContent = c => typeof c==='string' ? c : (c||[]).map(b=>b.text||'').join('');
+async function openaiOnce(key, o){
+  const body = { model:getModel(), input:o.messages.map(m=>({role:m.role, content:flatContent(m.content)})), max_output_tokens:Math.max(o.max_tokens*2, 16000), stream:true };
+  if(o.system) body.instructions = o.system;
+  if(o.tools) body.tools = o.tools.map(t=> (t.type||'').startsWith('web_search') ? {type:'web_search'} : {type:'function', name:t.name, description:t.description||'', parameters:t.input_schema});
+  if(o.tool_choice && o.tool_choice.type==='tool') body.tool_choice = {type:'function', name:o.tool_choice.name};
+  const res = await fetch('https://api.openai.com/v1/responses', {method:'POST', headers:{'content-type':'application/json','authorization':'Bearer '+key}, body:JSON.stringify(body)});
+  if(!res.ok) throw await httpError(res);
+  let final=null, streamed='';
+  await sseRead(res, (ev,d)=>{
+    const t = d.type || ev;
+    if(t==='response.output_text.delta') streamed += d.delta||'';
+    else if(t==='response.completed' || t==='response.incomplete') final = d.response;
+    else if(t==='response.failed'){ const e=new Error((d.response&&d.response.error&&d.response.error.message)||'OpenAI request failed'); e.status=500; throw e; }
+    else if(t==='error'){ const e=new Error(d.message||(d.error&&d.error.message)||'OpenAI stream error'); e.status=d.code==='rate_limit_exceeded'?429:500; throw e; }
+  });
+  if(!final) throw netDrop();
+  let text='', toolInput=null;
+  (final.output||[]).forEach(it=>{
+    if(it.type==='message') (it.content||[]).forEach(c=>{ if(c.type==='output_text') text+=c.text||''; });
+    if(it.type==='function_call' && !toolInput){ try{ toolInput = JSON.parse(it.arguments||'{}'); }catch(e){} }
+  });
+  return {text: text||streamed, toolInput, stop: final.status==='incomplete' ? 'max_tokens' : 'end_turn', content:[]};
+}
+async function geminiOnce(key, o){
+  const body = { contents:o.messages.map(m=>({role:m.role==='assistant'?'model':'user', parts:[{text:flatContent(m.content)}]})), generationConfig:{maxOutputTokens:Math.max(o.max_tokens*2, 16000)} };
+  if(o.system) body.systemInstruction = {parts:[{text:o.system}]};
+  if(o.tools){
+    if(o.tools.some(t=>(t.type||'').startsWith('web_search'))) body.tools = [{google_search:{}}];
+    else body.tools = [{functionDeclarations:o.tools.map(t=>({name:t.name, description:t.description||'', parameters:t.input_schema}))}];
+  }
+  if(o.tool_choice && o.tool_choice.type==='tool') body.toolConfig = {functionCallingConfig:{mode:'ANY', allowedFunctionNames:[o.tool_choice.name]}};
+  const url = 'https://generativelanguage.googleapis.com/v1beta/models/'+encodeURIComponent(getModel())+':streamGenerateContent?alt=sse';
+  const res = await fetch(url, {method:'POST', headers:{'content-type':'application/json','x-goog-api-key':key}, body:JSON.stringify(body)});
+  if(!res.ok) throw await httpError(res);
+  let text='', toolInput=null, finish=null;
+  await sseRead(res, (ev,d)=>{
+    if(d.error){ const e=new Error(d.error.message||'Gemini error'); e.status=d.error.code||500; throw e; }
+    const c=(d.candidates||[])[0]; if(!c) return;
+    ((c.content&&c.content.parts)||[]).forEach(p=>{ if(p.thought) return; if(p.text) text+=p.text; if(p.functionCall && !toolInput) toolInput=p.functionCall.args||{}; });
+    if(c.finishReason) finish=c.finishReason;
+  });
+  if(!finish) throw netDrop();
+  if(finish==='SAFETY' || finish==='RECITATION' || finish==='PROHIBITED_CONTENT') throw new Error('Gemini stopped the response ('+finish+'). Try again or switch model.');
+  return {text, toolInput, stop: finish==='MAX_TOKENS' ? 'max_tokens' : 'end_turn', content:[]};
+}
+async function claude(opts){
+  const prov = provider();
+  if(prov==='anthropic') return anthropicCall(opts);
+  const key = $('#apiKey').value.trim();
+  if(!key) throw new Error('Add your '+PROVIDERS[prov].keyLabel+' in step 1.');
+  const o = Object.assign({max_tokens:4096}, opts);
+  for(let attempt=0; ; attempt++){
+    try{ return await (prov==='openai' ? openaiOnce(key, o) : geminiOnce(key, o)); }
+    catch(e){
+      const retryable = e.network || e instanceof TypeError || [408,429,500,502,503,504,529].includes(e.status);
+      if(!retryable || attempt>=2) throw (e instanceof TypeError ? new Error('Connection to '+PROVIDERS[prov].name+' dropped ('+e.message+'). Check your internet and keep the app open while it runs.') : e);
+      const wait = attempt===0 ? 3000 : 8000;
+      try{ log(`Connection issue (${e.message}). Retrying in ${wait/1000}s…`); }catch(_){}
+      await sleep(wait);
+    }
+  }
+}
+async function anthropicCall({system, messages, max_tokens=4096, tools, tool_choice, temperature}){
   const key = $('#apiKey').value.trim();
   if(!key) throw new Error('Add your Anthropic API key in step 1.');
   let msgs = messages.slice();
@@ -591,18 +691,74 @@ function markDone(){
 $$('.step').forEach(el=> el.onclick = ()=>{ const s=+el.dataset.s; if(s===4 && !state.result) return; go(s); });
 
 /* ================= step 1 ================= */
-$('#apiKey').value = store.get('key','') || '';
-$('#model').value = store.get('model','claude-sonnet-5-5');
-if(!$('#model').value) $('#model').value='claude-sonnet-5-5';
-$('#customModel').value = store.get('customModel','');
-$('#customWrap').classList.toggle('hidden', $('#model').value!=='custom');
-$('#model').onchange = ()=>{ $('#customWrap').classList.toggle('hidden', $('#model').value!=='custom'); store.set('model',$('#model').value); };
-$('#customModel').oninput = ()=> store.set('customModel',$('#customModel').value);
-function saveKey(){ if($('#rememberKey').checked) store.set('key',$('#apiKey').value.trim()); else store.del('key'); markDone(); }
+let keys = store.get('keys', null) || {};
+if(!keys.anthropic && store.get('key','')) keys.anthropic = store.get('key','');   // migrate old single key
+let models = store.get('models', null) || {};
+if(!models.anthropic && store.get('model','')) models.anthropic = store.get('model','');
+let customModels = store.get('customModels', null) || {};
+if(!customModels.anthropic && store.get('customModel','')) customModels.anthropic = store.get('customModel','');
+let modelLists = store.get('modelLists', null) || {};
+function fillModels(){
+  const p = provider(), P = PROVIDERS[p], sel = $('#model');
+  const list = (modelLists[p] && modelLists[p].length) ? modelLists[p] : P.models;
+  sel.innerHTML = list.map(([id,label])=>`<option value="${esc(id)}">${esc(label||id)}</option>`).join('') + '<option value="custom">Custom model ID…</option>';
+  const want = models[p] || P.def;
+  sel.value = want; if(sel.value!==want){ if(want==='custom') sel.value='custom'; else { sel.value = list.some(x=>x[0]===P.def)?P.def:list[0][0]; } }
+  $('#customModel').value = customModels[p] || '';
+  $('#customWrap').classList.toggle('hidden', sel.value!=='custom');
+  $('#modelsStatus').textContent = (modelLists[p] && modelLists[p].length) ? `${modelLists[p].length} models loaded from your account.` : "Lists every model your key can use, so you're never stuck with an outdated name.";
+}
+function showProvider(){
+  const p = provider(), P = PROVIDERS[p];
+  $('#keyLabel').textContent = P.keyLabel; $('#apiKey').placeholder = P.hint; $('#keyLink').href = P.keyUrl;
+  $('#apiKey').value = keys[p] || '';
+  $('#keyStatus').textContent = '';
+  fillModels(); markDone();
+}
+function saveKey(){
+  const p = provider(); keys[p] = $('#apiKey').value.trim();
+  if($('#rememberKey').checked){ store.set('keys', keys); store.set('provider', p); } else { store.del('keys'); store.del('key'); }
+  markDone();
+}
+$('#provider').value = store.get('provider','anthropic') || 'anthropic';
+showProvider();
+$('#provider').onchange = ()=>{ store.set('provider', provider()); showProvider(); };
+$('#model').onchange = ()=>{ models[provider()] = $('#model').value; store.set('models', models); $('#customWrap').classList.toggle('hidden', $('#model').value!=='custom'); };
+$('#customModel').oninput = ()=>{ customModels[provider()] = $('#customModel').value.trim(); store.set('customModels', customModels); };
 $('#apiKey').onchange = saveKey; $('#rememberKey').onchange = saveKey;
+async function listModels(p, key){
+  if(p==='anthropic'){
+    const r = await fetch('https://api.anthropic.com/v1/models?limit=100', {headers:{'x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'}});
+    if(!r.ok) throw await httpError(r);
+    return ((await r.json()).data||[]).map(m=>[m.id, m.display_name ? `${m.display_name} (${m.id})` : m.id]);
+  }
+  if(p==='openai'){
+    const r = await fetch('https://api.openai.com/v1/models', {headers:{'authorization':'Bearer '+key}});
+    if(!r.ok) throw await httpError(r);
+    return ((await r.json()).data||[]).map(m=>m.id)
+      .filter(id=>/^(gpt|o\d|chat)/i.test(id) && !/(image|audio|realtime|tts|transcri|embed|moderation|search|whisper|dall|codex|cyber|instruct|live)/i.test(id))
+      .sort((a,b)=>b.localeCompare(a, undefined, {numeric:true})).map(id=>[id,id]);
+  }
+  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000', {headers:{'x-goog-api-key':key}});
+  if(!r.ok) throw await httpError(r);
+  return ((await r.json()).models||[])
+    .filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent') && /gemini/i.test(m.name) && !/(tts|image|embed|live|audio|robotics|transcribe|veo|imagen|omni)/i.test(m.name))
+    .map(m=>{ const id=m.name.replace(/^models\//,''); return [id, m.displayName ? `${m.displayName} (${id})` : id]; });
+}
+$('#loadModels').onclick = async ()=>{
+  const b=$('#loadModels'), p=provider(), key=$('#apiKey').value.trim();
+  if(!key){ $('#modelsStatus').innerHTML='<span class="bad">Add your API key first.</span>'; return; }
+  busy(b,true,'Loading…');
+  try{
+    const list = await listModels(p, key);
+    if(!list.length) throw new Error('No text models found for this key');
+    modelLists[p] = list; store.set('modelLists', modelLists); saveKey(); fillModels();
+  }catch(e){ $('#modelsStatus').innerHTML='<span class="bad">✗ '+esc(e.message)+'</span>'; }
+  busy(b,false);
+};
 $('#testKey').onclick = async ()=>{
   const b=$('#testKey'); busy(b,true,'Testing…'); $('#keyStatus').textContent='';
-  try{ await claude({messages:[{role:'user',content:'Reply with OK'}], max_tokens:5}); $('#keyStatus').innerHTML='<span class="good">✓ Connected to '+esc(getModel())+'</span>'; saveKey(); }
+  try{ await claude({messages:[{role:'user',content:'Reply with OK'}], max_tokens:16}); $('#keyStatus').innerHTML='<span class="good">✓ Connected to '+esc(getModel())+'</span>'; saveKey(); }
   catch(e){ $('#keyStatus').innerHTML='<span class="bad">✗ '+esc(e.message)+'</span>'; }
   busy(b,false);
 };
@@ -680,7 +836,7 @@ function renderProfile(err){
   const list = a => (a&&a.length)? '<ul class="guide">'+a.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>' : '<p class="sub">—</p>';
   $('#profileView').classList.remove('hidden');
   $('#profileView').innerHTML = `
-   ${err?`<div class="notice warnbox">Claude's style analysis failed (${esc(err)}). The numeric profile was saved, so the rewrite still works but will be less accurate. Check your key/model and click Analyze again.</div>`:''}
+   ${err?`<div class="notice warnbox">The AI's style analysis failed (${esc(err)}). The numeric profile was saved, so the rewrite still works but will be less accurate. Check your key/model and click Analyze again.</div>`:''}
    <h3>Your style profile</h3>
    ${g?`<div class="notice">${esc(g.summary||'')}</div>`:''}
    <div class="grid3" style="margin-top:10px">
@@ -1268,8 +1424,10 @@ renderProfile = function(err){ _renderProfile(err); updateBanners(); };
   if(restored){
     state.profile = store.get('profile', null) || state.profile;
     const s = store.get('samples', null); if(s) state.samples = s;
-    if(!$('#apiKey').value) $('#apiKey').value = store.get('key','') || '';
-    const m = store.get('model', null); if(m) $('#model').value = m;
+    keys = store.get('keys', null) || keys; if(!keys.anthropic && store.get('key','')) keys.anthropic = store.get('key','');
+    models = store.get('models', null) || models; customModels = store.get('customModels', null) || customModels; modelLists = store.get('modelLists', null) || modelLists;
+    $('#provider').value = store.get('provider', provider()) || 'anthropic';
+    showProvider();
   }
   renderSamples();
   if(state.profile) renderProfile();
