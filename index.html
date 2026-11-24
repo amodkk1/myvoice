@@ -174,35 +174,10 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
   <!-- STEP 3 -->
   <section id="s3" class="card hidden">
     <div id="profileBanner" class="notice hidden" style="margin-bottom:12px"></div>
-    <div class="tabs" id="modeTabs">
-      <div class="tab active" data-m="text">✍️ Rewrite pasted text</div>
-      <div class="tab" data-m="link">🔗 News link → blog</div>
-    </div>
-    <div id="textMode">
-      <h2>Paste the blog / write-up</h2>
-      <p class="sub">Paste the text you want to make original. It gets rewritten in your voice, keeping every fact, number and name, and then checked for overlap with the original.</p>
-      <textarea id="source" placeholder="Paste the article here…" style="min-height:260px"></textarea>
-      <div class="counter" id="srcCount"></div>
-    </div>
-    <div id="linkMode" class="hidden">
-      <h2>Write a blog from a news link</h2>
-      <p class="sub">Paste a news article link. The AI reads it for <b>full context</b>, <b>researches the topic</b> further on the web (background, related developments, data and viewpoints, with sources), then writes an <b>original blog post</b> in your style. The article is the starting point, not something to copy. The plagiarism, humanize and editorial checks then run on the result.</p>
-      <label>News article link</label>
-      <input type="text" id="newsUrl" placeholder="https://…" inputmode="url" autocomplete="off">
-      <label>Your angle or take (optional)</label>
-      <textarea id="angle" style="min-height:90px" placeholder="e.g. What this means for Canadian operators, or why I think the timeline is optimistic…"></textarea>
-      <div class="grid3">
-        <div><label>Blog length</label>
-          <select id="blogLen"><option value="500">Short (~500 words)</option><option value="800" selected>Medium (~800 words)</option><option value="1200">Long (~1,200 words)</option></select></div>
-        <div><label>Research depth</label>
-          <select id="depth"><option value="none">Article only</option><option value="standard" selected>Article + research (~5 searches)</option><option value="deep">Deep research (~10 searches)</option></select></div>
-        <div><label>Written for</label>
-          <select id="audience"><option value="industry">Industry professionals (LinkedIn / blog)</option><option value="executive">Executives and decision makers</option><option value="general">General readers</option></select></div>
-      </div>
-      <details style="margin-top:10px"><summary>Paywalled, or the link won't load? Paste the article text here</summary>
-        <textarea id="linkText" style="min-height:160px;margin-top:8px" placeholder="Optional: paste the article text. It's used for context instead of fetching the link; the topic is still researched on the web."></textarea>
-      </details>
-    </div>
+    <h2>Paste the blog / write-up</h2>
+    <p class="sub">Paste the text you want to make original. It gets rewritten in your voice, keeping every fact, number and name, and then checked for overlap with the original.</p>
+    <textarea id="source" placeholder="Paste the article here…" style="min-height:260px"></textarea>
+    <div class="counter" id="srcCount"></div>
     <div class="grid3" style="margin-top:6px">
       <div><label>Rewrite strength</label>
         <select id="strength">
@@ -269,7 +244,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
     <div class="card"><h2>Web search check</h2><div id="webDetails"><p class="sub">Not run.</p></div></div>
   </section>
 </main>
-<footer><b>MyVoice v2.0</b> · updated 24 Nov 2026 · news link → researched original blog<br>All analysis runs in your browser except the AI API calls</footer>
+<footer><b>MyVoice v1.8</b> · updated 20 Nov 2026 · Claude, ChatGPT &amp; Gemini support<br>All analysis runs in your browser except the AI API calls</footer>
 
 <script>
 /* ================= utilities ================= */
@@ -598,7 +573,7 @@ const flatContent = c => typeof c==='string' ? c : (c||[]).map(b=>b.text||'').jo
 async function openaiOnce(key, o){
   const body = { model:getModel(), input:o.messages.map(m=>({role:m.role, content:flatContent(m.content)})), max_output_tokens:Math.max(o.max_tokens*2, 16000), stream:true };
   if(o.system) body.instructions = o.system;
-  if(o.tools){ body.tools = o.tools.map(t=> (t.type||'').startsWith('web_') ? {type:'web_search'} : {type:'function', name:t.name, description:t.description||'', parameters:t.input_schema}); if(body.tools.filter(t=>t.type==='web_search').length>1) body.tools = body.tools.filter((t,i,a)=> t.type!=='web_search' || a.findIndex(x=>x.type==='web_search')===i); }
+  if(o.tools) body.tools = o.tools.map(t=> (t.type||'').startsWith('web_search') ? {type:'web_search'} : {type:'function', name:t.name, description:t.description||'', parameters:t.input_schema});
   if(o.tool_choice && o.tool_choice.type==='tool') body.tool_choice = {type:'function', name:o.tool_choice.name};
   const res = await fetch('https://api.openai.com/v1/responses', {method:'POST', headers:{'content-type':'application/json','authorization':'Bearer '+key}, body:JSON.stringify(body)});
   if(!res.ok) throw await httpError(res);
@@ -622,10 +597,7 @@ async function geminiOnce(key, o){
   const body = { contents:o.messages.map(m=>({role:m.role==='assistant'?'model':'user', parts:[{text:flatContent(m.content)}]})), generationConfig:{maxOutputTokens:Math.max(o.max_tokens*2, 16000)} };
   if(o.system) body.systemInstruction = {parts:[{text:o.system}]};
   if(o.tools){
-    const web = [];
-    if(o.tools.some(t=>t.type==='web_fetch')) web.push({url_context:{}});
-    if(o.tools.some(t=>(t.type||'').startsWith('web_search'))) web.push({google_search:{}});
-    if(web.length) body.tools = web;
+    if(o.tools.some(t=>(t.type||'').startsWith('web_search'))) body.tools = [{google_search:{}}];
     else body.tools = [{functionDeclarations:o.tools.map(t=>({name:t.name, description:t.description||'', parameters:t.input_schema}))}];
   }
   if(o.tool_choice && o.tool_choice.type==='tool') body.toolConfig = {functionCallingConfig:{mode:'ANY', allowedFunctionNames:[o.tool_choice.name]}};
@@ -645,10 +617,7 @@ async function geminiOnce(key, o){
 }
 async function claude(opts){
   const prov = provider();
-  if(prov==='anthropic'){
-    if(opts.tools) opts = Object.assign({}, opts, {tools: opts.tools.map(t=> t.type==='web_fetch' ? {type:'web_fetch_20250910', name:'web_fetch', max_uses:3} : t)});
-    return anthropicCall(opts);
-  }
+  if(prov==='anthropic') return anthropicCall(opts);
   const key = $('#apiKey').value.trim();
   if(!key) throw new Error('Add your '+PROVIDERS[prov].keyLabel+' in step 1.');
   const o = Object.assign({max_tokens:4096}, opts);
@@ -1226,132 +1195,24 @@ async function auditRevise(text, a){
   return r.text.trim().replace(/^```\w*\n?|```$/g,'');
 }
 
-/* ================= news link → blog ================= */
-const tagOf = (t, name) => { const m = t.match(new RegExp('<'+name+'>([\\s\\S]*?)</'+name+'>','i')); return m ? m[1].trim() : ''; };
-async function extractNotes(text){
-  const r = await claude({
-    max_tokens: 3000,
-    system: 'You turn articles into terse research notes. Notes capture meaning only, never wording.',
-    messages:[{role:'user', content:`<article>\n${text}\n</article>\n\nTurn this into notes:\n- One bullet per point or fact, in the same order.\n- Telegraphic fragments of at most 8 words, in YOUR OWN words. Never copy a phrase of 3+ words from the article, except names, numbers, product names and technical terms.\n- Keep every number, date, name and technical term exactly.\n- Direct quotations attributed to someone: QUOTE (speaker): "exact words".\nOutput only the bullets.`}]
-  });
-  return r.text.trim();
-}
-async function researchNews({url, pastedNotes, depth}){
-  const searches = depth==='deep' ? 10 : 5;
-  const tools = [];
-  if(!pastedNotes) tools.push({type:'web_fetch'});
-  if(depth!=='none') tools.push({type:'web_search_20250305', name:'web_search', max_uses:searches});
-  const researchAsk = depth==='none' ? '' : `
-STEP 2: Research the topic further with web search (about ${searches} searches): background and what led to this, related developments at other companies or in other countries, relevant data and figures from reputable sources (regulators, standards bodies, company filings, analysts, established media), and differing viewpoints. Prefer recent, authoritative sources. Every research fact must carry its source.`;
-  const r = await claude({
-    max_tokens: 9000,
-    tools,
-    system: 'You are a meticulous research analyst preparing a briefing for a blog writer. You use your web tools, report facts accurately with their sources, and never invent facts, numbers or quotes.',
-    messages:[{role:'user', content:`${pastedNotes ? `STEP 1: Here are notes from a news article the author wants to write about:\n<article_notes>\n${pastedNotes}\n</article_notes>` : `STEP 1: Read this news article with your web tool, to understand the full context: ${url}`}
-${researchAsk}
-
-Then reply in EXACTLY this format, in your own words throughout (do not copy sentences from any source):
-<status>ok</status>   (or <status>failed: short reason</status> if you could not read the article itself, e.g. paywall or not accessible)
-<title>the article's headline</title>
-<outlet>publication name</outlet>
-<date>publication date if shown, else unknown</date>
-<summary>2–3 sentences: what the news is and why it matters</summary>
-<article_facts>
-- key facts, numbers, names and dates from the article (telegraphic; keep numbers, names and technical terms exact)
-- QUOTE (speaker): "exact words" only for a short quotation worth citing
-- mark hedged or attributed claims, e.g. "(company claim)", "(analyst estimate)"
-</article_facts>
-<research>
-- one fact or insight per line from your additional research, each ending with (Source: publication or organization, URL)
-</research>
-<angles>
-- 3 to 5 distinct angles an expert could take in an original blog about this
-</angles>
-<open_questions>
-- unknowns, risks or claims that remain unverified
-</open_questions>`}]
-  });
-  const t = r.text || '';
-  const status = tagOf(t,'status') || (tagOf(t,'article_facts') ? 'ok' : 'failed: no content returned');
-  const facts = tagOf(t,'article_facts');
-  if(!/^ok/i.test(status) || wordsOf(facts).length < 12){
-    throw new Error('Could not read the article ('+(status.replace(/^failed:?\s*/i,'')||'no content')+'). Open "Paywalled, or the link won\'t load?" and paste the article text.');
-  }
-  const research = tagOf(t,'research');
-  const sources = [...new Set((research.match(/https?:\/\/[^\s)\]>]+/g)||[]).map(u=>u.replace(/[.,;]+$/,'')))];
-  return { url, title:tagOf(t,'title'), outlet:tagOf(t,'outlet'), date:tagOf(t,'date'), summary:tagOf(t,'summary'),
-           facts, research, angles:tagOf(t,'angles'), questions:tagOf(t,'open_questions'), sources };
-}
-async function writeBlog(news, angle, words, audience){
-  const tel = $('#domain').value==='telecom';
-  const aud = {industry:'industry professionals reading a LinkedIn article or blog', executive:'executives and decision makers who want the business implications', general:'general readers with no specialist background'}[audience] || 'industry professionals';
-  const r = await claude({
-    max_tokens: 7000,
-    system: `You are a ghostwriter for one specific author. You write original, well-researched blog posts in that author's voice. A news story is the starting point; the post is the author's own piece.\n\n${styleBrief()}\n\n${editorialRules()}${$('#humanize').checked?'Avoid AI-sounding writing: no "delve", "tapestry", "testament to", "in today\'s fast-paced world", "ever-evolving", "it\'s important to note", "game-changer", "seamless", "unlock", "elevate", "embark", "realm", "landscape", no "not only… but also", no tidy lists of three everywhere, no motivational wrap-up.\n':''}`,
-    messages:[{role:'user', content:`Research briefing:
-<news outlet="${(news.outlet||'').replace(/"/g,"'")}" date="${(news.date||'').replace(/"/g,"'")}" url="${news.url}">
-Headline: ${news.title||'(not given)'}
-Summary: ${news.summary||''}
-Facts from the article:
-${news.facts}
-</news>
-${news.research?`<research>\n${news.research}\n</research>\n`:''}${news.angles?`<possible_angles>\n${news.angles}\n</possible_angles>\n`:''}${news.questions?`<open_questions>\n${news.questions}\n</open_questions>\n`:''}${angle?`<author_angle>\n${angle}\n</author_angle>\n`:''}
-Write an ORIGINAL blog post of about ${words} words for ${aud}, in the author's voice.
-- This is not a summary of the article. Use the news as the hook, then build the author's own analysis on the wider research: context, comparisons, data, implications${tel?' for operators, vendors and customers, and the technical and commercial trade-offs':''}.
-- ${angle?'Build the post around the author\'s angle above.':'Pick the strongest one or two of the possible angles and commit to them.'}
-- Every fact, number, name and quote must come from the briefing; never invent any. Present analysis and predictions clearly as the author's perspective. Mention open questions where they matter instead of overstating claims.
-- Credit sources naturally in the text ("as ${news.outlet||'the outlet'} reported", "according to …") where a fact is specific.
-- Start with "# " and your own headline (not the article's). Up to 3 "## " subheadings only if they help.
-- End on a concrete point or an open question, not a summary or motivational line.
-- Finish with a line "Sources:" followed by the article link and the research links you actually used, one per line.
-Output only the post.`}]
-  });
-  return r.text.trim().replace(/^```\w*\n?|```$/g,'');
-}
 $('#rewriteBtn').onclick = async ()=>{
-  const isLink = mode==='link';
-  let source = $('#source').value.trim();
+  const source = $('#source').value.trim();
   if(!state.profile){ alert('Create your style profile first (step 2).'); go(2); return; }
-  const url = $('#newsUrl').value.trim(), pasted = $('#linkText').value.trim();
-  if(isLink){
-    if(!/^https?:\/\/\S+\.\S+/i.test(url) && wordsOf(pasted).length<40){ alert('Paste a full news link starting with https:// (or paste the article text in the box below it).'); return; }
-  } else if(wordsOf(source).length<40){ alert('Paste a longer text (at least ~40 words).'); return; }
+  if(wordsOf(source).length<40){ alert('Paste a longer text (at least ~40 words).'); return; }
   const b=$('#rewriteBtn'); busy(b,true,'Working…');
   let wake=null; try{ if(navigator.wakeLock) wake = await navigator.wakeLock.request('screen'); }catch(e){}
   $('#progressWrap').classList.remove('hidden'); $('#log').textContent='';
-  state.web=null; state.news=null;
+  state.source = source; state.web=null;
   try{
     state.audit = null;
     const doAudit = $('#audit').value==='on';
     let auditBefore = null, auditErr = '';
-    let text;
-    if(isLink){
-      const depth = $('#depth').value;
-      let news;
-      if(wordsOf(pasted).length>=40){
-        log('Reading the article text you pasted…');
-        const notes = await extractNotes(pasted);
-        log(depth==='none' ? 'Preparing the briefing…' : 'Researching the topic on the web…');
-        news = await researchNews({url: url||'(pasted article)', pastedNotes: notes, depth});
-        source = pasted;   // copy check against the real article text
-      } else {
-        log(depth==='none' ? 'Reading the news article for context…' : 'Reading the article and researching the topic (this can take a minute or two)…');
-        news = await researchNews({url, depth});
-        source = [news.summary, news.facts, news.research].filter(Boolean).join('\n\n');
-      }
-      const nResearch = news.research ? news.research.split('\n').filter(x=>x.trim()).length : 0;
-      log(`Briefing ready: ${news.title||'article'}${news.outlet?' ('+news.outlet+')':''} · ${news.facts.split('\n').filter(x=>x.trim()).length} article facts · ${nResearch} research points · ${news.sources.length} sources`);
-      state.news = news;
-      log(`Writing a ~${$('#blogLen').value}-word original blog in your style…`);
-      text = await writeBlog(news, $('#angle').value.trim(), +$('#blogLen').value, $('#audience').value);
-    }
-    state.source = source;
-    if(doAudit && !isLink){
+    if(doAudit){
       log('Editorial audit of the original (9 categories)…');
       try{ auditBefore = await runAudit(source); log(`Original averages ${auditBefore.avg.toFixed(1)}/10`); }
       catch(e){ auditErr = e.message; log('Audit failed: '+e.message+' (continuing without it)'); }
     }
-    if(!isLink) text = await rewriteText(source, auditGuidance(auditBefore));
+    let text = await rewriteText(source, auditGuidance(auditBefore));
     log('Checking against the original (5-word overlap + sentence similarity)…');
     let res = localPlagiarism(text, source);
     log(`Originality ${res.originality}% · ${res.coveredPct.toFixed(1)}% copied words · ${res.flagged.length} close sentences`);
@@ -1370,10 +1231,10 @@ $('#rewriteBtn').onclick = async ()=>{
       text = hl.text; state.hHistory = hl.history;
       res = localPlagiarism(text, source);
     }
-    if(doAudit && (auditBefore || isLink)){
+    if(doAudit && auditBefore){
       let auditAfter = null;
       try{
-        log(isLink ? 'Editorial audit of your blog (9 categories)…' : 'Re-auditing your version…');
+        log('Re-auditing your version…');
         auditAfter = await runAudit(text, auditBefore);
         log(`Your version averages ${auditAfter.avg.toFixed(1)}/10`);
         const aRounds = +$('#aRounds').value;
@@ -1384,7 +1245,7 @@ $('#rewriteBtn').onclick = async ()=>{
           if(p.coveredPct>=1 || p.flagged.length){ t = await fixFlagged(t, p, source); p = localPlagiarism(t, source); }
           const hc = humanCheck(t);
           if(hc.score < +$('#hTarget').value){ log('Smoothing AI patterns after revision…'); const hl = await humanizeLoop(t, source, 1, +$('#hTarget').value, (state.hHistory.length? Math.max(...state.hHistory.map(x=>x.round))+1 : 1)); t = hl.text; state.hHistory = state.hHistory.concat(hl.history.filter(x=>x.round>0)); }
-          const a2 = await runAudit(t, auditBefore || auditAfter);
+          const a2 = await runAudit(t, auditBefore);
           log(`→ ${a2.avg.toFixed(1)}/10${a2.avg>=auditAfter.avg?'':' (lower, kept previous version)'}`);
           if(a2.avg >= auditAfter.avg){ text = t; auditAfter = a2; }
         }
@@ -1392,7 +1253,6 @@ $('#rewriteBtn').onclick = async ()=>{
       state.audit = {before: auditBefore, after: auditAfter};
       res = localPlagiarism(text, source);
     } else if(doAudit) state.audit = {error:'The audit of the original failed'+(auditErr?': '+auditErr:'')+'.'};
-    if(state.audit && !state.audit.error && !state.audit.after) state.audit = {error:'The editorial audit failed. Check the progress log for the reason.'};
     state.rewrite = text; state.result = res;
     if($('#webCheck').value==='on'){
       try{ state.web = await webCheck(text); log('Web search done.'); }
@@ -1404,17 +1264,6 @@ $('#rewriteBtn').onclick = async ()=>{
   try{ if(wake) wake.release(); }catch(e){}
   busy(b,false);
 };
-
-let mode = store.get('mode','text') || 'text';
-function setMode(m){
-  mode = m; store.set('mode', m);
-  $$('#modeTabs .tab').forEach(t=>t.classList.toggle('active', t.dataset.m===m));
-  $('#textMode').classList.toggle('hidden', m!=='text'); $('#linkMode').classList.toggle('hidden', m!=='link');
-  $('#strength').closest('div').classList.toggle('hidden', m!=='text');
-  $('#rewriteBtn').innerHTML = m==='link' ? 'Write blog in my style &amp; check →' : 'Rewrite in my style &amp; check →';
-}
-$$('#modeTabs .tab').forEach(t=> t.onclick = ()=> setMode(t.dataset.m));
-setMode(mode);
 
 /* ================= step 4: results ================= */
 let view='hl';
@@ -1429,24 +1278,13 @@ function renderResults(){
   const webMatches = web && web.results ? web.results.filter(x=>x.status==='match').length : 0;
   const webSimilar = web && web.results ? web.results.filter(x=>x.status==='similar').length : 0;
   const clean = res.coveredPct<1 && res.flagged.length===0 && webMatches===0;
-  const N = state.news;
-  const bullets = s => (s||'').split('\n').map(x=>x.replace(/^\s*[-•*]\s*/,'').trim()).filter(Boolean);
-  const linkify = s => esc(s).replace(/(https?:\/\/[^\s)<]+)/g, u=>`<a href="${u}" target="_blank" rel="noopener">${u.length>50?u.slice(0,50)+'…':u}</a>`);
-  const newsLine = N ? `<div class="notice" style="margin-bottom:8px">Based on: <b>${esc(N.title||'pasted article')}</b>${N.outlet?' · '+esc(N.outlet):''}${/^https?:/.test(N.url)?` · <a href="${esc(N.url)}" target="_blank" rel="noopener">open article</a>`:''} · ${bullets(N.research).length} research points from ${N.sources.length} sources
-    <details style="margin-top:8px"><summary>Research briefing used for the blog</summary>
-      ${N.summary?`<p>${esc(N.summary)}</p>`:''}
-      <h3>From the article</h3><ul class="guide">${bullets(N.facts).map(x=>'<li>'+esc(x)+'</li>').join('')}</ul>
-      ${N.research?`<h3>Additional research</h3><ul class="guide">${bullets(N.research).map(x=>'<li>'+linkify(x)+'</li>').join('')}</ul>`:''}
-      ${N.angles?`<h3>Angles considered</h3><ul class="guide">${bullets(N.angles).map(x=>'<li>'+esc(x)+'</li>').join('')}</ul>`:''}
-      ${N.questions?`<h3>Open questions</h3><ul class="guide">${bullets(N.questions).map(x=>'<li>'+esc(x)+'</li>').join('')}</ul>`:''}
-    </details></div>` : '';
-  $('#verdict').innerHTML = newsLine + (clean
+  $('#verdict').innerHTML = clean
     ? '<span class="good">✓ Plagiarism-free.</span> No 5-word runs copied from the original, no sentences that are close paraphrases'+(web&&web.results?', and no web matches for the sampled sentences':'')+'.'
-    : `<span class="warn">⚠ Needs attention:</span> ${res.coveredPct>=1?res.coveredPct.toFixed(1)+'% of words come from copied runs. ':''}${res.flagged.length?res.flagged.length+' sentence(s) are still close to the original. ':''}${webMatches?webMatches+' web match(es). ':''}Click <b>Fix flagged parts</b>.`);
+    : `<span class="warn">⚠ Needs attention:</span> ${res.coveredPct>=1?res.coveredPct.toFixed(1)+'% of words come from copied runs. ':''}${res.flagged.length?res.flagged.length+' sentence(s) are still close to the original. ':''}${webMatches?webMatches+' web match(es). ':''}Click <b>Fix flagged parts</b>.`;
   $('#scores').innerHTML = `
     <div class="score"><div class="n ${cls(res.originality,90,75)}">${res.originality}%</div><div class="l">Originality vs source</div></div>
     <div class="score"><div class="n ${cls(hc.score,target,70)}">${hc.score}</div><div class="l">Human score (target ${target})</div></div>
-    ${state.audit&&state.audit.after?`<div class="score"><div class="n ${cls(state.audit.after.avg,8,6)}">${state.audit.after.avg.toFixed(1)}</div><div class="l">Editorial audit /10${state.audit.before?` (original ${state.audit.before.avg.toFixed(1)})`:''}</div></div>`:''}
+    ${state.audit&&state.audit.after?`<div class="score"><div class="n ${cls(state.audit.after.avg,8,6)}">${state.audit.after.avg.toFixed(1)}</div><div class="l">Editorial audit /10 (original ${state.audit.before.avg.toFixed(1)})</div></div>`:''}
     <div class="score"><div class="n ${cls(simOut.score,80,65)}">${simOut.score}%</div><div class="l">Style match to you (source was ${simSrc.score}%)</div></div>
     <div class="score"><div class="n ${web&&web.results? (webMatches?'bad':(webSimilar?'warn':'good')) : ''}">${web&&web.results? (webMatches? webMatches+' match':'Clear') : (web&&web.error?'Error':'Off')}</div><div class="l">Web search check</div></div>`;
   // text views
@@ -1470,17 +1308,17 @@ function renderResults(){
     const catBlock = (c) => `<details><summary>${esc(c.name)} · ${c.score}/10</summary><p class="sub" style="margin:6px 0">${esc(c.rubric)}</p>${(c.findings||[]).map(f=>`<div class="ex">“${esc(f.excerpt)}”</div><p style="margin:2px 0 4px"><b>Why:</b> ${esc(f.problem)}</p><p style="margin:0 0 10px"><b>Revision:</b> ${esc(f.revision)}</p>`).join('')||'<p class="good">No issues.</p>'}</details>`;
     $('#auditDetails').innerHTML = `
       <div class="notice">No AI detector can reliably prove who wrote a text. These scores are an editorial judgement, and the Human score is a style check, not proof of human authorship.</div>
-      <table style="margin-top:10px"><tr><th>Category</th>${B?'<th class="num">Original</th>':''}<th class="num">${state.news?'Your blog':'Your version'}</th></tr>
-      ${AUDIT_CATS.map((n,i)=>`<tr><td>${i+1}. ${esc(n)}</td>${B?`<td class="num">${sc(B.categories[i]&&B.categories[i].score)}</td>`:''}<td class="num">${sc(A&&A.categories[i]&&A.categories[i].score)}</td></tr>`).join('')}
-      <tr><td><b>Average</b></td>${B?`<td class="num"><b>${B.avg.toFixed(1)}</b></td>`:''}<td class="num"><b>${A?A.avg.toFixed(1):'—'}</b></td></tr></table>
+      <table style="margin-top:10px"><tr><th>Category</th><th class="num">Original</th><th class="num">Your version</th></tr>
+      ${AUDIT_CATS.map((n,i)=>`<tr><td>${i+1}. ${esc(n)}</td><td class="num">${sc(B.categories[i]&&B.categories[i].score)}</td><td class="num">${sc(A&&A.categories[i]&&A.categories[i].score)}</td></tr>`).join('')}
+      <tr><td><b>Average</b></td><td class="num"><b>${B.avg.toFixed(1)}</b></td><td class="num"><b>${A?A.avg.toFixed(1):'—'}</b></td></tr></table>
       ${A&&A.improvements&&A.improvements.length?`<h3>How the revision improves authenticity and technical value</h3><ul class="guide">${A.improvements.map(x=>'<li>'+esc(x)+'</li>').join('')}</ul>`:''}
       ${A?`<h3>Facts and statistics to verify before publishing</h3>${(A.facts_to_verify||[]).length?`<ul class="guide">${A.facts_to_verify.map(f=>`<li><b>${esc(f.claim)}</b>: ${esc(f.reason)}${f.source_type?` <span class="pill">${esc(f.source_type)}</span>`:''}</li>`).join('')}</ul>`:'<p class="sub">None flagged.</p>'}`:''}
       ${A&&A.categories.some(c=>c.score<9)?`<h3>Remaining top changes for your version</h3><ol class="guide">${(A.top_changes||[]).map(x=>'<li>'+esc(x)+'</li>').join('')}</ol>`:''}
-      <h3>${state.news?'Your blog':'Your version'}: category details</h3>${A?A.categories.map(catBlock).join(''):'<p class="sub">Re-audit failed.</p>'}
-      ${B?`<h3>Original article audit</h3>
+      <h3>Your version: category details</h3>${A?A.categories.map(catBlock).join(''):'<p class="sub">Re-audit failed.</p>'}
+      <h3>Original article audit</h3>
       <details><summary>Top 10 changes the original needed</summary><ol class="guide">${(B.top_changes||[]).map(x=>'<li>'+esc(x)+'</li>').join('')}</ol></details>
       <details><summary>Facts flagged in the original (${(B.facts_to_verify||[]).length})</summary><ul class="guide">${(B.facts_to_verify||[]).map(f=>`<li><b>${esc(f.claim)}</b>: ${esc(f.reason)}</li>`).join('')}</ul></details>
-      ${B.categories.map(catBlock).join('')}`:''}
+      ${B.categories.map(catBlock).join('')}
       <button class="btn small" id="reAudit" style="margin-top:8px">Audit &amp; fix again</button>`;
     const ra=$('#reAudit'); if(ra) ra.onclick = async ()=>{
       busy(ra,true,'Auditing…'); $('#log').textContent='';
@@ -1489,7 +1327,7 @@ function renderResults(){
         let t = await auditRevise(state.rewrite, cur);
         let p = localPlagiarism(t, state.source);
         if(p.coveredPct>=1 || p.flagged.length){ t = await fixFlagged(t, p, state.source); }
-        const a2 = await runAudit(t, au.before || cur);
+        const a2 = await runAudit(t, au.before);
         if(a2.avg >= cur.avg){ state.rewrite = t; au.after = a2; } else { au.after = cur; alert('The new revision scored lower, so your current version was kept.'); }
         state.result = localPlagiarism(state.rewrite, state.source); renderResults();
       }catch(e){ alert('Audit failed: '+e.message); busy(ra,false); }
@@ -1528,7 +1366,7 @@ function renderResults(){
   const rw=$('#runWeb'); if(rw) rw.onclick = async ()=>{ busy(rw,true,'Searching…'); try{ state.web = await webCheck(state.rewrite); }catch(e){ state.web={error:e.message}; } renderResults(); };
   markDone();
 }
-$$('#s4 .tab').forEach(t=> t.onclick = ()=>{ $$('#s4 .tab').forEach(x=>x.classList.remove('active')); t.classList.add('active'); view=t.dataset.v; renderResults(); });
+$$('.tab').forEach(t=> t.onclick = ()=>{ $$('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active'); view=t.dataset.v; renderResults(); });
 $('#copyOut').onclick = async ()=>{ try{ await navigator.clipboard.writeText(state.rewrite); $('#copyOut').textContent='Copied ✓'; setTimeout(()=>$('#copyOut').textContent='Copy',1500); }catch(e){ alert('Copy failed; select the text in "Clean text" and copy manually.'); } };
 $('#dlOut').onclick = ()=>{ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([state.rewrite],{type:'text/plain'})); a.download='rewritten.txt'; a.click(); };
 $('#editOut').onclick = ()=>{
