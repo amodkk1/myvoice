@@ -186,7 +186,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
     </div>
     <div id="linkMode" class="hidden">
       <h2>Write a blog from a news link</h2>
-      <p class="sub">Paste a news article link. The AI reads it, pulls out the facts, and writes an <b>original blog post</b> about it in your style, with your take if you add one. The same plagiarism, humanize and editorial checks then run on the result.</p>
+      <p class="sub">Paste a news article link. The AI reads it for <b>full context</b>, <b>researches the topic</b> further on the web (background, related developments, data and viewpoints, with sources), then writes an <b>original blog post</b> in your style. The article is the starting point, not something to copy. The plagiarism, humanize and editorial checks then run on the result.</p>
       <label>News article link</label>
       <input type="text" id="newsUrl" placeholder="https://…" inputmode="url" autocomplete="off">
       <label>Your angle or take (optional)</label>
@@ -194,11 +194,13 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
       <div class="grid3">
         <div><label>Blog length</label>
           <select id="blogLen"><option value="500">Short (~500 words)</option><option value="800" selected>Medium (~800 words)</option><option value="1200">Long (~1,200 words)</option></select></div>
+        <div><label>Research depth</label>
+          <select id="depth"><option value="none">Article only</option><option value="standard" selected>Article + research (~5 searches)</option><option value="deep">Deep research (~10 searches)</option></select></div>
         <div><label>Written for</label>
           <select id="audience"><option value="industry">Industry professionals (LinkedIn / blog)</option><option value="executive">Executives and decision makers</option><option value="general">General readers</option></select></div>
       </div>
       <details style="margin-top:10px"><summary>Paywalled, or the link won't load? Paste the article text here</summary>
-        <textarea id="linkText" style="min-height:160px;margin-top:8px" placeholder="Optional: paste the article text. It's used instead of fetching the link."></textarea>
+        <textarea id="linkText" style="min-height:160px;margin-top:8px" placeholder="Optional: paste the article text. It's used for context instead of fetching the link; the topic is still researched on the web."></textarea>
       </details>
     </div>
     <div class="grid3" style="margin-top:6px">
@@ -267,7 +269,7 @@ footer{color:var(--muted);font-size:12px;text-align:center;padding:10px}
     <div class="card"><h2>Web search check</h2><div id="webDetails"><p class="sub">Not run.</p></div></div>
   </section>
 </main>
-<footer><b>MyVoice v1.9</b> · updated 23 Nov 2026 · news link → blog in your style<br>All analysis runs in your browser except the AI API calls</footer>
+<footer><b>MyVoice v2.0</b> · updated 24 Nov 2026 · news link → researched original blog<br>All analysis runs in your browser except the AI API calls</footer>
 
 <script>
 /* ================= utilities ================= */
@@ -596,7 +598,7 @@ const flatContent = c => typeof c==='string' ? c : (c||[]).map(b=>b.text||'').jo
 async function openaiOnce(key, o){
   const body = { model:getModel(), input:o.messages.map(m=>({role:m.role, content:flatContent(m.content)})), max_output_tokens:Math.max(o.max_tokens*2, 16000), stream:true };
   if(o.system) body.instructions = o.system;
-  if(o.tools) body.tools = o.tools.map(t=> (t.type||'').startsWith('web_') ? {type:'web_search'} : {type:'function', name:t.name, description:t.description||'', parameters:t.input_schema});
+  if(o.tools){ body.tools = o.tools.map(t=> (t.type||'').startsWith('web_') ? {type:'web_search'} : {type:'function', name:t.name, description:t.description||'', parameters:t.input_schema}); if(body.tools.filter(t=>t.type==='web_search').length>1) body.tools = body.tools.filter((t,i,a)=> t.type!=='web_search' || a.findIndex(x=>x.type==='web_search')===i); }
   if(o.tool_choice && o.tool_choice.type==='tool') body.tool_choice = {type:'function', name:o.tool_choice.name};
   const res = await fetch('https://api.openai.com/v1/responses', {method:'POST', headers:{'content-type':'application/json','authorization':'Bearer '+key}, body:JSON.stringify(body)});
   if(!res.ok) throw await httpError(res);
@@ -620,8 +622,10 @@ async function geminiOnce(key, o){
   const body = { contents:o.messages.map(m=>({role:m.role==='assistant'?'model':'user', parts:[{text:flatContent(m.content)}]})), generationConfig:{maxOutputTokens:Math.max(o.max_tokens*2, 16000)} };
   if(o.system) body.systemInstruction = {parts:[{text:o.system}]};
   if(o.tools){
-    if(o.tools.some(t=>t.type==='web_fetch')) body.tools = [{url_context:{}}];
-    else if(o.tools.some(t=>(t.type||'').startsWith('web_search'))) body.tools = [{google_search:{}}];
+    const web = [];
+    if(o.tools.some(t=>t.type==='web_fetch')) web.push({url_context:{}});
+    if(o.tools.some(t=>(t.type||'').startsWith('web_search'))) web.push({google_search:{}});
+    if(web.length) body.tools = web;
     else body.tools = [{functionDeclarations:o.tools.map(t=>({name:t.name, description:t.description||'', parameters:t.input_schema}))}];
   }
   if(o.tool_choice && o.tool_choice.type==='tool') body.toolConfig = {functionCallingConfig:{mode:'ANY', allowedFunctionNames:[o.tool_choice.name]}};
@@ -1232,60 +1236,78 @@ async function extractNotes(text){
   });
   return r.text.trim();
 }
-async function fetchNews(url, withQuotes=true){
+async function researchNews({url, pastedNotes, depth}){
+  const searches = depth==='deep' ? 10 : 5;
+  const tools = [];
+  if(!pastedNotes) tools.push({type:'web_fetch'});
+  if(depth!=='none') tools.push({type:'web_search_20250305', name:'web_search', max_uses:searches});
+  const researchAsk = depth==='none' ? '' : `
+STEP 2: Research the topic further with web search (about ${searches} searches): background and what led to this, related developments at other companies or in other countries, relevant data and figures from reputable sources (regulators, standards bodies, company filings, analysts, established media), and differing viewpoints. Prefer recent, authoritative sources. Every research fact must carry its source.`;
   const r = await claude({
-    max_tokens: 5000,
-    tools:[{type:'web_fetch'}],
-    system: 'You are a research assistant. You read news articles with your web tool and report their facts accurately. Never invent facts that are not in the article.',
-    messages:[{role:'user', content:`Read the news article at this link with your web tool: ${url}
+    max_tokens: 9000,
+    tools,
+    system: 'You are a meticulous research analyst preparing a briefing for a blog writer. You use your web tools, report facts accurately with their sources, and never invent facts, numbers or quotes.',
+    messages:[{role:'user', content:`${pastedNotes ? `STEP 1: Here are notes from a news article the author wants to write about:\n<article_notes>\n${pastedNotes}\n</article_notes>` : `STEP 1: Read this news article with your web tool, to understand the full context: ${url}`}
+${researchAsk}
 
-Then reply in EXACTLY this format:
-<status>ok</status>   (or <status>failed: short reason</status> if you could not read the article itself, e.g. paywall, not accessible, not an article)
+Then reply in EXACTLY this format, in your own words throughout (do not copy sentences from any source):
+<status>ok</status>   (or <status>failed: short reason</status> if you could not read the article itself, e.g. paywall or not accessible)
 <title>the article's headline</title>
 <outlet>publication name</outlet>
 <date>publication date if shown, else unknown</date>
-<notes>
-- one bullet per fact, development, number or claim, in order
-- telegraphic fragments of at most 8 words, in your own words; keep numbers, dates, names, companies, products and technical terms exact
-- QUOTE (speaker): "exact words" for any direct quotation worth keeping
-- mark claims the article itself attributes or hedges, e.g. "(per company)", "(analyst estimate)"
-</notes>
-${withQuotes?`<key_sentences>
-up to 12 of the article's most important sentences, each quoted exactly as written, one per line (used only to check that the blog does not copy them)
-</key_sentences>`:''}`}]
+<summary>2–3 sentences: what the news is and why it matters</summary>
+<article_facts>
+- key facts, numbers, names and dates from the article (telegraphic; keep numbers, names and technical terms exact)
+- QUOTE (speaker): "exact words" only for a short quotation worth citing
+- mark hedged or attributed claims, e.g. "(company claim)", "(analyst estimate)"
+</article_facts>
+<research>
+- one fact or insight per line from your additional research, each ending with (Source: publication or organization, URL)
+</research>
+<angles>
+- 3 to 5 distinct angles an expert could take in an original blog about this
+</angles>
+<open_questions>
+- unknowns, risks or claims that remain unverified
+</open_questions>`}]
   });
   const t = r.text || '';
-  const status = tagOf(t,'status') || (tagOf(t,'notes') ? 'ok' : 'failed: no notes returned');
-  const notes = tagOf(t,'notes');
-  if(!/^ok/i.test(status) || wordsOf(notes).length < 15){
+  const status = tagOf(t,'status') || (tagOf(t,'article_facts') ? 'ok' : 'failed: no content returned');
+  const facts = tagOf(t,'article_facts');
+  if(!/^ok/i.test(status) || wordsOf(facts).length < 12){
     throw new Error('Could not read the article ('+(status.replace(/^failed:?\s*/i,'')||'no content')+'). Open "Paywalled, or the link won\'t load?" and paste the article text.');
   }
-  return { url, title: tagOf(t,'title'), outlet: tagOf(t,'outlet'), date: tagOf(t,'date'), notes, keySentences: tagOf(t,'key_sentences') };
+  const research = tagOf(t,'research');
+  const sources = [...new Set((research.match(/https?:\/\/[^\s)\]>]+/g)||[]).map(u=>u.replace(/[.,;]+$/,'')))];
+  return { url, title:tagOf(t,'title'), outlet:tagOf(t,'outlet'), date:tagOf(t,'date'), summary:tagOf(t,'summary'),
+           facts, research, angles:tagOf(t,'angles'), questions:tagOf(t,'open_questions'), sources };
 }
 async function writeBlog(news, angle, words, audience){
   const tel = $('#domain').value==='telecom';
   const aud = {industry:'industry professionals reading a LinkedIn article or blog', executive:'executives and decision makers who want the business implications', general:'general readers with no specialist background'}[audience] || 'industry professionals';
   const r = await claude({
-    max_tokens: 6000,
-    system: `You are a ghostwriter. You write original blog posts about news, sounding exactly like one specific author.\n\n${styleBrief()}\n\n${editorialRules()}${$('#humanize').checked?'Avoid AI-sounding writing: no "delve", "tapestry", "testament to", "in today\'s fast-paced world", "ever-evolving", "it\'s important to note", "game-changer", "seamless", "unlock", "elevate", "embark", "realm", "landscape", no "not only… but also", no tidy lists of three everywhere, no motivational wrap-up.\n':''}`,
-    messages:[{role:'user', content:`<news source="${(news.outlet||'the source').replace(/"/g,"'")}" date="${(news.date||'').replace(/"/g,"'")}" url="${news.url}">
+    max_tokens: 7000,
+    system: `You are a ghostwriter for one specific author. You write original, well-researched blog posts in that author's voice. A news story is the starting point; the post is the author's own piece.\n\n${styleBrief()}\n\n${editorialRules()}${$('#humanize').checked?'Avoid AI-sounding writing: no "delve", "tapestry", "testament to", "in today\'s fast-paced world", "ever-evolving", "it\'s important to note", "game-changer", "seamless", "unlock", "elevate", "embark", "realm", "landscape", no "not only… but also", no tidy lists of three everywhere, no motivational wrap-up.\n':''}`,
+    messages:[{role:'user', content:`Research briefing:
+<news outlet="${(news.outlet||'').replace(/"/g,"'")}" date="${(news.date||'').replace(/"/g,"'")}" url="${news.url}">
 Headline: ${news.title||'(not given)'}
-${news.notes}
+Summary: ${news.summary||''}
+Facts from the article:
+${news.facts}
 </news>
-${angle?`\n<author_angle>\n${angle}\n</author_angle>\n`:''}
-Write an ORIGINAL blog post of about ${words} words about this news, for ${aud}, in the author's voice.
-- Start with a headline line beginning "# " (your own wording, not the article's headline), then a short hook.
-- Explain what happened using only facts from the notes. Credit the outlet once in natural words (e.g. "as ${news.outlet||'the outlet'} reported").
-- Then give the author's perspective: why it matters${tel?', what it means for operators, vendors and customers, and the technical or commercial trade-offs':''}. ${angle?'Build this around the author\'s angle above. ':''}Analysis must be clearly framed as perspective and reasoning; never present new facts, numbers or events that are not in the notes.
-- Keep quotations exactly as given, with the speaker.
-- Up to 3 "## " subheadings only if they help.
+${news.research?`<research>\n${news.research}\n</research>\n`:''}${news.angles?`<possible_angles>\n${news.angles}\n</possible_angles>\n`:''}${news.questions?`<open_questions>\n${news.questions}\n</open_questions>\n`:''}${angle?`<author_angle>\n${angle}\n</author_angle>\n`:''}
+Write an ORIGINAL blog post of about ${words} words for ${aud}, in the author's voice.
+- This is not a summary of the article. Use the news as the hook, then build the author's own analysis on the wider research: context, comparisons, data, implications${tel?' for operators, vendors and customers, and the technical and commercial trade-offs':''}.
+- ${angle?'Build the post around the author\'s angle above.':'Pick the strongest one or two of the possible angles and commit to them.'}
+- Every fact, number, name and quote must come from the briefing; never invent any. Present analysis and predictions clearly as the author's perspective. Mention open questions where they matter instead of overstating claims.
+- Credit sources naturally in the text ("as ${news.outlet||'the outlet'} reported", "according to …") where a fact is specific.
+- Start with "# " and your own headline (not the article's). Up to 3 "## " subheadings only if they help.
 - End on a concrete point or an open question, not a summary or motivational line.
-- Final line: "Source: ${news.outlet||'Original article'}, ${news.url}"
+- Finish with a line "Sources:" followed by the article link and the research links you actually used, one per line.
 Output only the post.`}]
   });
   return r.text.trim().replace(/^```\w*\n?|```$/g,'');
 }
-
 $('#rewriteBtn').onclick = async ()=>{
   const isLink = mode==='link';
   let source = $('#source').value.trim();
@@ -1304,24 +1326,23 @@ $('#rewriteBtn').onclick = async ()=>{
     let auditBefore = null, auditErr = '';
     let text;
     if(isLink){
+      const depth = $('#depth').value;
       let news;
       if(wordsOf(pasted).length>=40){
-        log('Using the article text you pasted; extracting the facts…');
-        news = {url: url||'(pasted article)', title:'', outlet:'', date:'', notes: await extractNotes(pasted), keySentences:''};
-        source = pasted;
+        log('Reading the article text you pasted…');
+        const notes = await extractNotes(pasted);
+        log(depth==='none' ? 'Preparing the briefing…' : 'Researching the topic on the web…');
+        news = await researchNews({url: url||'(pasted article)', pastedNotes: notes, depth});
+        source = pasted;   // copy check against the real article text
       } else {
-        log('Reading the news article…');
-        try{ news = await fetchNews(url, true); }
-        catch(e){
-          if(/RECITATION|stopped the response/i.test(e.message)){ log('Retrying without quoting the article…'); news = await fetchNews(url, false); }
-          else throw e;
-        }
-        log(`Read: ${news.title||'article'}${news.outlet?' ('+news.outlet+')':''} · ${news.notes.split('\n').filter(x=>x.trim()).length} facts`);
-        source = [news.keySentences, news.notes].filter(Boolean).join('\n\n');
-        if(!news.keySentences) log('Note: the AI did not return quoted sentences, so the copy check relies more on the web search.');
+        log(depth==='none' ? 'Reading the news article for context…' : 'Reading the article and researching the topic (this can take a minute or two)…');
+        news = await researchNews({url, depth});
+        source = [news.summary, news.facts, news.research].filter(Boolean).join('\n\n');
       }
+      const nResearch = news.research ? news.research.split('\n').filter(x=>x.trim()).length : 0;
+      log(`Briefing ready: ${news.title||'article'}${news.outlet?' ('+news.outlet+')':''} · ${news.facts.split('\n').filter(x=>x.trim()).length} article facts · ${nResearch} research points · ${news.sources.length} sources`);
       state.news = news;
-      log(`Writing a ~${$('#blogLen').value}-word blog in your style…`);
+      log(`Writing a ~${$('#blogLen').value}-word original blog in your style…`);
       text = await writeBlog(news, $('#angle').value.trim(), +$('#blogLen').value, $('#audience').value);
     }
     state.source = source;
@@ -1408,7 +1429,17 @@ function renderResults(){
   const webMatches = web && web.results ? web.results.filter(x=>x.status==='match').length : 0;
   const webSimilar = web && web.results ? web.results.filter(x=>x.status==='similar').length : 0;
   const clean = res.coveredPct<1 && res.flagged.length===0 && webMatches===0;
-  const newsLine = state.news ? `<div class="notice" style="margin-bottom:8px">Blog written from: <b>${esc(state.news.title||'pasted article')}</b>${state.news.outlet?' · '+esc(state.news.outlet):''}${/^https?:/.test(state.news.url)?` · <a href="${esc(state.news.url)}" target="_blank" rel="noopener">open article</a>`:''}</div>` : '';
+  const N = state.news;
+  const bullets = s => (s||'').split('\n').map(x=>x.replace(/^\s*[-•*]\s*/,'').trim()).filter(Boolean);
+  const linkify = s => esc(s).replace(/(https?:\/\/[^\s)<]+)/g, u=>`<a href="${u}" target="_blank" rel="noopener">${u.length>50?u.slice(0,50)+'…':u}</a>`);
+  const newsLine = N ? `<div class="notice" style="margin-bottom:8px">Based on: <b>${esc(N.title||'pasted article')}</b>${N.outlet?' · '+esc(N.outlet):''}${/^https?:/.test(N.url)?` · <a href="${esc(N.url)}" target="_blank" rel="noopener">open article</a>`:''} · ${bullets(N.research).length} research points from ${N.sources.length} sources
+    <details style="margin-top:8px"><summary>Research briefing used for the blog</summary>
+      ${N.summary?`<p>${esc(N.summary)}</p>`:''}
+      <h3>From the article</h3><ul class="guide">${bullets(N.facts).map(x=>'<li>'+esc(x)+'</li>').join('')}</ul>
+      ${N.research?`<h3>Additional research</h3><ul class="guide">${bullets(N.research).map(x=>'<li>'+linkify(x)+'</li>').join('')}</ul>`:''}
+      ${N.angles?`<h3>Angles considered</h3><ul class="guide">${bullets(N.angles).map(x=>'<li>'+esc(x)+'</li>').join('')}</ul>`:''}
+      ${N.questions?`<h3>Open questions</h3><ul class="guide">${bullets(N.questions).map(x=>'<li>'+esc(x)+'</li>').join('')}</ul>`:''}
+    </details></div>` : '';
   $('#verdict').innerHTML = newsLine + (clean
     ? '<span class="good">✓ Plagiarism-free.</span> No 5-word runs copied from the original, no sentences that are close paraphrases'+(web&&web.results?', and no web matches for the sampled sentences':'')+'.'
     : `<span class="warn">⚠ Needs attention:</span> ${res.coveredPct>=1?res.coveredPct.toFixed(1)+'% of words come from copied runs. ':''}${res.flagged.length?res.flagged.length+' sentence(s) are still close to the original. ':''}${webMatches?webMatches+' web match(es). ':''}Click <b>Fix flagged parts</b>.`);
